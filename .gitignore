@@ -1,4 +1,7 @@
 /.gradle/
+/.gradle-docker/
+/.android/
+/.home/
 /.idea/*.xml
 /.idea/caches/
 /.idea/dictionaries/
@@ -14,5 +17,6 @@ build/
 *.dex
 *.iml
 *.jks
+signing.properties
 gradlew.bat
 maint/

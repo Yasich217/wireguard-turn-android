@@ -134,8 +134,8 @@
     <string name="tv_no_file_picker">Пожалуйста, установите утилиту управления файлами для их просмотра</string>
     <string name="tv_add_tunnel_get_started">Добавьте туннель, чтобы начать</string>
     <string name="donate_title">♥ Пожертвовать проекту WG Turn</string>
-    <string name="donate_summary">Каждое пожертвование помогает</string>
-    <string name="donate_google_play_disappointment">Спасибо за поддержку проекта WG Turn!\n\nК сожалению, из-за политики Google, нельзя размещать ссылку на тот раздел сайта проекта, где можно сделать пожертвование. Надеемся, вы сможете разобраться самостоятельно!\n\nЕщё раз спасибо за ваш вклад.</string>
+    <string name="donate_summary">Реквизиты для поддержки будут добавлены позже</string>
+    <string name="donate_google_play_disappointment">Реквизиты для поддержки будут добавлены позже.</string>
     <string name="disable_config_export_title">Отключить экспорт конфигурации</string>
     <string name="disable_config_export_description">Отключение экспорта конфигурации делает приватные ключи менее доступными</string>
     <string name="dns_servers">DNS-серверы</string>
@@ -282,4 +282,105 @@
     <string name="biometric_prompt_private_key_title">Аутентификация для просмотра приватного ключа</string>
     <string name="biometric_auth_error">Ошибка аутентификации</string>
     <string name="biometric_auth_error_reason">Ошибка аутентификации: %s</string>
+    <string name="turn_title">TURN</string>
+    <string name="turn_enable">Включить TURN proxy</string>
+    <string name="turn_mode">Режим</string>
+    <string-array name="turn_mode_options">
+        <item>@string/turn_mode_vk_link</item>
+        <item>@string/turn_mode_wb</item>
+    </string-array>
+    <string name="turn_peer_type">Тип peer</string>
+    <string-array name="turn_peer_type_options">
+        <item>@string/turn_peer_type_proxy_v2_meta</item>
+        <item>@string/turn_peer_type_proxy_v2</item>
+        <item>@string/turn_peer_type_proxy_v1</item>
+        <item>@string/turn_peer_type_wireguard</item>
+    </string-array>
+    <string name="turn_peer_type_proxy_v2_meta">Proxy v2 meta</string>
+    <string name="turn_peer_type_proxy_v2">Proxy v2</string>
+    <string name="turn_peer_type_proxy_v1">Proxy v1</string>
+    <string name="turn_peer_type_wireguard">WireGuard</string>
+    <string name="turn_mode_vk_link">VK Link</string>
+    <string name="turn_mode_wb">WB</string>
+    <string name="turn_peer">Peer</string>
+    <string name="turn_peer_hint">IP:Port</string>
+    <string name="turn_vk_link">Ссылка VK Calls</string>
+    <string name="turn_vk_link_hint">https://vk.ru/call/join/...</string>
+    <string name="turn_streams">Streams (-n)</string>
+    <string name="turn_streams_hint">1-32 (по умолчанию 4)</string>
+    <string name="turn_local_port">Локальный порт</string>
+    <string name="turn_local_port_hint">1024-65535 (по умолчанию 9000)</string>
+    <string name="turn_use_udp">Использовать UDP</string>
+    <string name="turn_advanced">Расширенные настройки</string>
+    <string name="turn_ip">Turn IP</string>
+    <string name="turn_ip_hint">(авто)</string>
+    <string name="turn_port">Turn port</string>
+    <string name="turn_port_hint">(авто)</string>
+    <string name="turn_watchdog_timeout">Таймаут watchdog</string>
+    <string name="turn_watchdog_timeout_hint">0=выкл, ≥5 сек</string>
+    <string name="turn_streams_per_cred">Потоков на credentials</string>
+    <string name="turn_streams_per_cred_hint">1-32 (по умолчанию 4)</string>
+    <string name="turn_auto_switch">Автопереключение TURN</string>
+    <string name="turn_runtime_mode">Статус подключения</string>
+    <string name="turn_mode_checking_network">Проверка сети</string>
+    <string name="turn_mode_starting_proxy">Запуск TURN proxy</string>
+    <string name="turn_mode_retrying_proxy">Переподключение TURN proxy</string>
+    <string name="turn_mode_resolving_public_ip">Определение IP-адреса</string>
+    <string name="turn_mode_public_ip_resolved">IP-адрес получен</string>
+    <string name="turn_mode_public_ip_unavailable">IP-адрес недоступен</string>
+    <string name="turn_mode_active">TURN активен</string>
+    <string name="turn_mode_active_streams">TURN, активные потоки (%1$d)</string>
+    <string name="turn_mode_active_streams_full">TURN активен (%1$d/%2$d потоков)</string>
+    <string name="turn_mode_active_streams_partial_credentials">TURN активен (%1$d/%2$d), подключение %3$d потоков</string>
+    <string name="turn_mode_active_streams_partial_captcha">TURN активен (%1$d/%2$d), ожидание решения VK капчи для %3$d потоков</string>
+    <string name="turn_mode_active_streams_partial_quota">TURN активен (%1$d/%2$d), VK ограничивает %3$d потоков</string>
+    <string name="turn_mode_waiting_captcha_tap">Ожидание прохождения капчи (%1$d потоков в очереди)</string>
+    <string name="turn_mode_tap_to_solve_hint">Нажмите, чтобы открыть капчу VK</string>
+    <string name="turn_mode_tap_to_retry_hint">Нажмите, чтобы переподключить TURN</string>
+    <string name="turn_mode_direct">TURN не используется</string>
+    <string name="turn_mode_stopped_error">TURN остановлен из-за ошибки запуска</string>
+    <string name="turn_mode_stopped_streams">TURN остановлен (было %1$d/%2$d потоков)</string>
+    <string name="turn_runtime_client_ip">Публичный IP-адрес</string>
+    <string name="turn_runtime_errors">Ошибки</string>
+    <string name="turn_runtime_error_details">%1$d: %2$s</string>
+    <string name="turn_runtime_relay_ip">Relay IP</string>
+    <string name="turn_runtime_last_sync">Последнее рукопожатие</string>
+    <string name="ota_manual_update_title">Проверить обновления</string>
+    <string name="ota_manual_update_summary_default">Проверить и установить обновление</string>
+    <string name="ota_manual_update_summary_ready">Готово к установке: %1$s (%2$d)</string>
+    <string name="ota_manual_update_summary_checking">Проверка обновления…</string>
+    <string name="ota_check_in_progress">Проверка обновления уже выполняется</string>
+    <string name="ota_latest_installed">Установлена последняя версия</string>
+    <string name="ota_update_started">Запущена установка обновления (%s)</string>
+    <string name="ota_stage_checking">Проверка обновления…</string>
+    <string name="ota_stage_manifest_loaded">Найдено обновление: %1$s (%2$d)</string>
+    <string name="ota_stage_manifest_loaded_name">Найдено обновление: %1$s</string>
+    <string name="ota_stage_downloading">Загрузка обновления…</string>
+    <string name="ota_stage_downloading_percent">Загрузка обновления… %1$d%%</string>
+    <string name="ota_stage_downloading_long">Загрузка обновления, не отключайте VPN…</string>
+    <string name="ota_stage_download_interrupted">Загрузка обновления прервана. Попробуйте еще раз с включенным VPN.</string>
+    <string name="ota_stage_downloaded_verified">APK загружен и проверен</string>
+    <string name="ota_stage_installing">Разрешите и нажмите обновить…</string>
+    <string name="ota_stage_cached_ready">Используется уже скаченное обновление: %s</string>
+    <string name="ota_stage_confirm_install">Подтвердите установку...</string>
+    <string name="ota_failed_with_reason">Ошибка обновления: %s</string>
+    <string name="ota_network_error_user_friendly">Невозможно подключиться к серверу обновлений. Попробуйте еще раз с включенным VPN.</string>
+    <string name="ota_request_canceled">Проверка обновления отменена. Попробуйте еще раз.</string>
+    <string name="ota_install_failed_short">Ошибка обновления</string>
+    <string name="ota_install_aborted">Установка отменена</string>
+    <string name="ota_notification_channel_name">OTA-обновления</string>
+    <string name="ota_notification_channel_description">Показывает загрузку и установку OTA-обновлений</string>
+    <string name="ota_notification_title">Обновление WG Turn</string>
+    <string name="ota_notification_ready_next_launch">Готово к установке при следующем запуске: %1$s (%2$d)</string>
+    <string name="ota_notification_installed_open">Обновление установлено. Нажмите, чтобы открыть обновлённое приложение.</string>
+    <string name="turn_captcha_channel_name">VK капча</string>
+    <string name="turn_captcha_channel_desc">Уведомляет, когда VK логин требует ручного решения капчи</string>
+    <string name="turn_failure_channel_name">Ошибки TURN</string>
+    <string name="turn_failure_channel_desc">Уведомляет, когда TURN proxy не смог запуститься</string>
+    <string name="turn_vk_captcha_notification_title_one">Нужно решить VK капчу</string>
+    <string name="turn_vk_captcha_notification_title_many">Нужно решить VK капчи: %d</string>
+    <string name="turn_vk_captcha_notification_text_one">Нажмите, чтобы решить капчу VK</string>
+    <string name="turn_vk_captcha_notification_text_many">Нажмите, чтобы решить ожидающие капчи VK</string>
+    <string name="turn_failure_notification_title">TURN proxy не запущен</string>
+    <string name="turn_failure_notification_text">TURN proxy не работает. Нажмите, чтобы переподключиться.</string>
 </resources>

@@ -39,7 +39,9 @@ class FileConfigStore(private val context: Context) : ConfigStore {
     }
 
     override fun enumerate(): Set<String> {
-        return context.fileList()
+        val names = context.filesDir.listFiles()?.map { it.name }.orEmpty()
+        Log.d(TAG, "Enumerating configs in ${context.filesDir.absolutePath}: $names")
+        return names
             .filter { it.endsWith(".conf") }
             .map { it.substring(0, it.length - ".conf".length) }
             .toSet()

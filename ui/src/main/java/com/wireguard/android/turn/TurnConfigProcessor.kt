@@ -91,7 +91,7 @@ object TurnConfigProcessor {
             builder.setInterface(iface)
         }
 
-        // Determine if we should set PersistentKeepalive (when not in wireguard mode)
+        // Keepalive is useful for all proxy-based modes, but not for direct wireguard mode.
         val shouldSetKeepalive = turnSettings.peerType != "wireguard"
         val localPort = turnSettings.localPort
 

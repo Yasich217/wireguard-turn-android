@@ -25,6 +25,7 @@ import com.wireguard.android.databinding.TunnelListItemBinding
 import com.wireguard.android.model.ObservableTunnel
 import com.wireguard.android.util.ErrorMessages
 import kotlinx.coroutines.launch
+import java.util.concurrent.CancellationException
 
 /**
  * Base class for fragments that need to know the currently-selected tunnel. Only does anything when
@@ -92,6 +93,8 @@ abstract class BaseFragment : Fragment(), OnSelectedTunnelChangedListener {
         activity.lifecycleScope.launch {
             try {
                 tunnel.setStateAsync(Tunnel.State.of(checked))
+            } catch (_: CancellationException) {
+                Log.d(TAG, "Tunnel state change cancelled for ${tunnel.name}")
             } catch (e: Throwable) {
                 val error = ErrorMessages[e]
                 val messageResId = if (checked) R.string.error_up else R.string.error_down

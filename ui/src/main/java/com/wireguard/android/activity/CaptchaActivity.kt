@@ -18,150 +18,206 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
+import com.wireguard.android.turn.CaptchaCoordinator
 
-/**
- * Transparent-themed activity that shows a WebView dialog for VK captcha solving.
- * The WebView loads the VK "not_robot_captcha" page and intercepts the success_token
- * via JavaScript injection.
- */
 class CaptchaActivity : AppCompatActivity() {
-
     private var previousNetwork: Network? = null
     private var didBindNetwork = false
+    private var cacheId: Int = -1
+    private var redirectUri: String = ""
+    private var webView: WebView? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val redirectUri = intent.getStringExtra(EXTRA_REDIRECT_URI)
-        if (redirectUri.isNullOrEmpty()) {
-            Log.e(TAG, "No redirect URI provided")
-            deliverResult("")
-            finish()
-            return
-        }
-
-        // Bypass VPN: bind process to a physical (non-VPN) network
-        // so the WebView can actually reach id.vk.ru
         bindToPhysicalNetwork()
-
-        Log.d(TAG, "Loading captcha page...")
-
-        val webView = WebView(this).apply {
+        CaptchaCoordinator.registerActivity(this)
+        webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            settings.userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
-
+            settings.userAgentString = USER_AGENT
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, true)
+            }
             addJavascriptInterface(CaptchaBridge(), "AndroidCaptcha")
-
             webChromeClient = WebChromeClient()
-
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
-                    // Inject JS to intercept the captchaNotRobot.check response
                     view?.evaluateJavascript(INTERCEPT_SCRIPT, null)
                 }
 
-                override fun shouldOverrideUrlLoading(
-                    view: WebView?,
-                    request: WebResourceRequest?
-                ): Boolean {
-                    // Keep all navigation inside the WebView
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                     return false
                 }
             }
         }
-
         setContentView(webView)
-        webView.loadUrl(redirectUri)
+        applyIntent(intent)
     }
 
-    private fun deliverResult(token: String) {
-        pendingResult?.complete(token)
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (CaptchaCoordinator.isTerminalFailureActive()) {
+            finish()
+            return
+        }
+        if (cacheId >= 0 && !CaptchaCoordinator.isPending(cacheId)) {
+            finish()
+        }
+    }
+
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onBackPressed() {
+        val view = webView
+        if (view != null && view.canGoBack()) {
+            view.goBack()
+            return
+        }
+        if (cacheId >= 0) {
+            CaptchaCoordinator.dismiss(cacheId)
+        }
+        finish()
     }
 
     private inner class CaptchaBridge {
         @JavascriptInterface
         fun onResult(successToken: String) {
-            Log.d(TAG, "Captcha solved, got success_token (length=${successToken.length})")
             runOnUiThread {
-                deliverResult(successToken)
+                CaptchaCoordinator.complete(cacheId, successToken)
                 finish()
             }
         }
     }
 
-    /**
-     * Binds the process to a physical (non-VPN) network so the WebView
-     * can resolve DNS and load the captcha page even when VPN kill-switch is active.
-     */
     private fun bindToPhysicalNetwork() {
         try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             previousNetwork = cm.boundNetworkForProcess
-
-            val networks = cm.allNetworks
-            for (network in networks) {
-                val caps = cm.getNetworkCapabilities(network) ?: continue
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
-                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
-
-                cm.bindProcessToNetwork(network)
-                didBindNetwork = true
-                val type = when {
-                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
-                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
-                    else -> "Other"
-                }
-                Log.d(TAG, "Bound process to physical network: $network ($type)")
+            val network = selectBestPhysicalNetwork(cm)
+            if (network == null) {
+                Log.w(TAG, "No non-VPN physical network available for captcha WebView")
                 return
             }
-            Log.w(TAG, "No physical network found to bind to!")
+            cm.bindProcessToNetwork(network)
+            didBindNetwork = true
+            Log.d(TAG, "Captcha WebView bound to ${describeNetwork(cm, network)}")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to bind to physical network", e)
+            Log.e(TAG, "Failed to bind process to physical network", e)
         }
     }
 
-    /**
-     * Restores the previous network binding after captcha is done.
-     */
     private fun restoreNetworkBinding() {
         if (!didBindNetwork) return
         try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             cm.bindProcessToNetwork(previousNetwork)
-            Log.d(TAG, "Restored previous network binding")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to restore network binding", e)
+            Log.e(TAG, "Failed to restore previous network binding", e)
         }
     }
 
     override fun onDestroy() {
+        if (cacheId >= 0) {
+            CaptchaCoordinator.markHidden(cacheId)
+        }
+        CaptchaCoordinator.unregisterActivity(this)
         restoreNetworkBinding()
+        webView?.destroy()
+        webView = null
         super.onDestroy()
-        // If activity destroyed without result (back button etc.), deliver empty
-        deliverResult("")
+    }
+
+    private fun applyIntent(intent: Intent) {
+        val nextCacheId = intent.getIntExtra(EXTRA_CACHE_ID, -1)
+        val nextRedirectUri = intent.getStringExtra(EXTRA_REDIRECT_URI).orEmpty()
+        if (nextCacheId < 0 || nextRedirectUri.isBlank()) {
+            if (cacheId >= 0) {
+                CaptchaCoordinator.cancel(cacheId)
+            }
+            finish()
+            return
+        }
+
+        // Repeated tap on notification must not create a stack of stale captcha pages.
+        if (cacheId == nextCacheId && redirectUri == nextRedirectUri) {
+            CaptchaCoordinator.markVisible(cacheId)
+            return
+        }
+
+        if (cacheId >= 0 && cacheId != nextCacheId) {
+            CaptchaCoordinator.cancel(cacheId)
+        }
+
+        cacheId = nextCacheId
+        redirectUri = nextRedirectUri
+
+        if (CaptchaCoordinator.isTerminalFailureActive()) {
+            finish()
+            return
+        }
+        if (!CaptchaCoordinator.isPending(cacheId)) {
+            finish()
+            return
+        }
+
+        CaptchaCoordinator.markVisible(cacheId)
+        webView?.loadUrl(redirectUri)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun selectBestPhysicalNetwork(cm: ConnectivityManager): Network? {
+        val candidates = cm.allNetworks.mapNotNull { network ->
+            val caps = cm.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return@mapNotNull null
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return@mapNotNull null
+            network to caps
+        }
+        if (candidates.isEmpty()) return null
+        val activeNetwork = cm.activeNetwork
+        return candidates.maxByOrNull { (network, caps) ->
+            var score = 0
+            if (network == activeNetwork) score += 100
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) score += 50
+            when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> score += 30
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> score += 20
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> score += 10
+            }
+            score
+        }?.first
+    }
+
+    private fun describeNetwork(cm: ConnectivityManager, network: Network): String {
+        val caps = cm.getNetworkCapabilities(network)
+        val props = cm.getLinkProperties(network)
+        val transports = buildList {
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) add("wifi")
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) add("cellular")
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true) add("ethernet")
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) add("vpn")
+        }.joinToString(",").ifBlank { "unknown" }
+        val dns = props?.dnsServers?.joinToString(",") { it.hostAddress.orEmpty() }.orEmpty()
+        return "handle=${network.networkHandle} transports=$transports validated=${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true} dns=[$dns]"
     }
 
     companion object {
         private const val TAG = "WireGuard/CaptchaActivity"
-        private const val EXTRA_REDIRECT_URI = "redirect_uri"
-        private const val CAPTCHA_TIMEOUT_SECONDS = 120L
+        const val EXTRA_CACHE_ID = "cache_id"
+        const val EXTRA_REDIRECT_URI = "redirect_uri"
+        private const val CAPTCHA_TIMEOUT_SECONDS = 180L
+        private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
 
-        @Volatile
-        private var pendingResult: CompletableFuture<String>? = null
-
-        /**
-         * JavaScript that intercepts XHR/fetch calls to captchaNotRobot.check
-         * and extracts the success_token from the response.
-         * Also intercepts postMessage in case the page sends the result that way.
-         */
         private val INTERCEPT_SCRIPT = """
             (function() {
-                // Intercept XMLHttpRequest
                 var origOpen = XMLHttpRequest.prototype.open;
                 var origSend = XMLHttpRequest.prototype.send;
                 XMLHttpRequest.prototype.open = function() {
@@ -177,13 +233,12 @@ class CaptchaActivity : AppCompatActivity() {
                                 if (data.response && data.response.success_token) {
                                     AndroidCaptcha.onResult(data.response.success_token);
                                 }
-                            } catch(e) {}
+                            } catch (e) {}
                         });
                     }
                     return origSend.apply(this, arguments);
                 };
 
-                // Intercept fetch
                 var origFetch = window.fetch;
                 if (origFetch) {
                     window.fetch = function() {
@@ -191,61 +246,22 @@ class CaptchaActivity : AppCompatActivity() {
                         if (typeof url === 'object' && url.url) url = url.url;
                         var p = origFetch.apply(this, arguments);
                         if (typeof url === 'string' && url.indexOf('captchaNotRobot.check') !== -1) {
-                            p.then(function(response) {
-                                return response.clone().json();
-                            }).then(function(data) {
-                                if (data.response && data.response.success_token) {
-                                    AndroidCaptcha.onResult(data.response.success_token);
-                                }
-                            }).catch(function(e) {});
+                            p.then(function(response) { return response.clone().json(); })
+                             .then(function(data) {
+                                 if (data.response && data.response.success_token) {
+                                     AndroidCaptcha.onResult(data.response.success_token);
+                                 }
+                             })
+                             .catch(function() {});
                         }
                         return p;
                     };
                 }
-
-                // Intercept postMessage as backup
-                window.addEventListener('message', function(e) {
-                    try {
-                        var data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
-                        if (data && data.success_token) {
-                            AndroidCaptcha.onResult(data.success_token);
-                        } else if (data && data.response && data.response.success_token) {
-                            AndroidCaptcha.onResult(data.response.success_token);
-                        }
-                    } catch(ex) {}
-                });
             })();
         """.trimIndent()
 
-        /**
-         * Launches the captcha activity and blocks until result is available.
-         * Called from a background thread (Go thread via JNI).
-         * @param context Application context
-         * @param redirectUri VK captcha redirect URI
-         * @return success_token or empty string
-         */
-        fun solveCaptcha(context: Context, redirectUri: String): String {
-            Log.d(TAG, "solveCaptcha called, launching activity...")
-
-            val future = CompletableFuture<String>()
-            pendingResult = future
-
-            val intent = Intent(context, CaptchaActivity::class.java).apply {
-                putExtra(EXTRA_REDIRECT_URI, redirectUri)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-
-            return try {
-                val result = future.get(CAPTCHA_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                Log.d(TAG, "solveCaptcha result: ${if (result.isNotEmpty()) "token" else "empty"}")
-                result
-            } catch (e: Exception) {
-                Log.e(TAG, "solveCaptcha failed", e)
-                ""
-            } finally {
-                pendingResult = null
-            }
+        fun solveCaptcha(context: Context, cacheId: Int, redirectUri: String): String {
+            return CaptchaCoordinator.request(context, cacheId, redirectUri)
         }
     }
 }

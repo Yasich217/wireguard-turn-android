@@ -7,6 +7,7 @@ package com.wireguard.android
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.os.StrictMode
 import android.os.StrictMode.ThreadPolicy
 import android.os.StrictMode.VmPolicy
@@ -17,15 +18,16 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
 import com.google.android.material.color.DynamicColors
+import com.wireguard.android.activity.CaptchaActivity
 import com.wireguard.android.backend.Backend
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.TurnBackend
 import com.wireguard.android.backend.WgQuickBackend
-import com.wireguard.android.activity.CaptchaActivity
 import com.wireguard.android.configStore.FileConfigStore
 import com.wireguard.android.model.TunnelManager
 import com.wireguard.android.turn.TurnProxyManager
 import com.wireguard.android.turn.TurnSettingsStore
+import com.wireguard.android.updater.OtaUpdater
 import com.wireguard.android.updater.Updater
 import com.wireguard.android.util.RootShell
 import com.wireguard.android.util.ToolsInstaller
@@ -42,6 +44,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.Locale
 
 class Application : android.app.Application() {
@@ -53,6 +56,7 @@ class Application : android.app.Application() {
     private lateinit var toolsInstaller: ToolsInstaller
     private lateinit var tunnelManager: TunnelManager
     private lateinit var turnProxyManager: TurnProxyManager
+    private val startedActivities = AtomicInteger(0)
 
     override fun attachBaseContext(context: Context) {
         super.attachBaseContext(context)
@@ -90,6 +94,19 @@ class Application : android.app.Application() {
     override fun onCreate() {
         Log.i(TAG, USER_AGENT)
         super.onCreate()
+        registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityDestroyed(activity: android.app.Activity) = Unit
+            override fun onActivityPaused(activity: android.app.Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: Bundle) = Unit
+            override fun onActivityStarted(activity: android.app.Activity) {
+                startedActivities.incrementAndGet()
+            }
+            override fun onActivityResumed(activity: android.app.Activity) = Unit
+            override fun onActivityStopped(activity: android.app.Activity) {
+                startedActivities.updateAndGet { value -> if (value > 0) value - 1 else 0 }
+            }
+        })
         DynamicColors.applyToActivitiesIfAvailable(this)
         rootShell = RootShell(applicationContext)
         toolsInstaller = ToolsInstaller(applicationContext, rootShell)
@@ -117,14 +134,11 @@ class Application : android.app.Application() {
         )
         // Load wg-go library BEFORE creating TurnProxyManager to avoid UnsatisfiedLinkError
         com.wireguard.android.util.SharedLibraryLoader.loadSharedLibrary(applicationContext, "wg-go")
-        turnProxyManager = TurnProxyManager(applicationContext)
-        
-        // Register captcha handler for TURN proxy (fallback when automatic solving fails)
-        TurnBackend.setCaptchaHandler { redirectUri ->
-            Log.d(TAG, "Captcha handler invoked, showing CaptchaActivity")
-            CaptchaActivity.solveCaptcha(applicationContext, redirectUri)
+        TurnBackend.setApplicationContext(applicationContext)
+        TurnBackend.setCaptchaHandler { cacheId, redirectUri ->
+            CaptchaActivity.solveCaptcha(applicationContext, cacheId, redirectUri)
         }
-        
+        turnProxyManager = TurnProxyManager(applicationContext)
         tunnelManager.onCreate()
         coroutineScope.launch(Dispatchers.IO) {
             try {
@@ -136,6 +150,7 @@ class Application : android.app.Application() {
         }
         // Updater.monitorForUpdates()  // Disabled for fork
         // If you want to enable updates, set up your own update server and configure Updater.kt
+        OtaUpdater.triggerInstallIfReadyOnStartup()
 
         if (BuildConfig.DEBUG) {
             StrictMode.setVmPolicy(VmPolicy.Builder().detectAll().penaltyLog().build())
@@ -159,6 +174,8 @@ class Application : android.app.Application() {
 
         suspend fun getBackend() = get().futureBackend.await()
 
+        fun peekBackend(): Backend? = get().backend
+
         fun getRootShell() = get().rootShell
 
         fun getPreferencesDataStore() = get().preferencesDataStore
@@ -170,6 +187,8 @@ class Application : android.app.Application() {
         fun getTurnProxyManager() = get().turnProxyManager
 
         fun getCoroutineScope() = get().coroutineScope
+
+        fun isAppInForeground(): Boolean = get().startedActivities.get() > 0
     }
 
     init {

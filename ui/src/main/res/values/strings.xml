@@ -112,8 +112,9 @@
     <string name="tv_no_file_picker">Please install a file management utility to browse files</string>
     <string name="tv_add_tunnel_get_started">Add a tunnel to get started</string>
     <string name="donate_title">♥ Donate to the WG Turn Project</string>
-    <string name="donate_summary">Every contribution helps</string>
-    <string name="donate_google_play_disappointment">Thank you for supporting the WG Turn Project!\n\nUnfortunately, due to Google\'s policies, we\'re not allowed to link to the part of the project webpage where you can make a donation. Hopefully you can figure this out!\n\nThanks again for your contribution.</string>
+    <string name="donate_summary">Donation details will be added later</string>
+    <string name="donate_google_play_disappointment">Donation details will be added later.</string>
+    <string name="donate_placeholder_message">Donation details will be added later.</string>
     <string name="disable_config_export_title">Disable config exporting</string>
     <string name="disable_config_export_description">Disabling config exporting makes private keys less accessible</string>
     <string name="dns_servers">DNS servers</string>
@@ -268,16 +269,16 @@
         <item>@string/turn_mode_wb</item>
     </string-array>
     <string name="turn_peer_type">Peer type</string>
-    <string name="turn_peer_address">Peer address</string>
     <string-array name="turn_peer_type_options">
+        <item>@string/turn_peer_type_proxy_v2_meta</item>
         <item>@string/turn_peer_type_proxy_v2</item>
         <item>@string/turn_peer_type_proxy_v1</item>
         <item>@string/turn_peer_type_wireguard</item>
     </string-array>
+    <string name="turn_peer_type_proxy_v2_meta">Proxy v2 meta</string>
     <string name="turn_peer_type_proxy_v2">Proxy v2</string>
     <string name="turn_peer_type_proxy_v1">Proxy v1</string>
     <string name="turn_peer_type_wireguard">WireGuard</string>
-    <string name="turn_server_mode">TURN server</string>
     <string name="turn_mode_vk_link">VK Link</string>
     <string name="turn_mode_wb">WB</string>
     <string name="turn_peer">Peer</string>
@@ -285,7 +286,7 @@
     <string name="turn_vk_link">VK Calls link</string>
     <string name="turn_vk_link_hint">https://vk.ru/call/join/...</string>
     <string name="turn_streams">Streams (-n)</string>
-    <string name="turn_streams_hint">1-16 (default 4)</string>
+    <string name="turn_streams_hint">1-32 (default 4)</string>
     <string name="turn_local_port">Local port</string>
     <string name="turn_local_port_hint">1024-65535 (default 9000)</string>
     <string name="turn_use_udp">Use UDP</string>
@@ -297,9 +298,68 @@
     <string name="turn_watchdog_timeout">Watchdog timeout</string>
     <string name="turn_watchdog_timeout_hint">0=disabled, ≥5 sec</string>
     <string name="turn_streams_per_cred">Streams per credentials</string>
-    <string name="turn_streams_per_cred_hint">1-16 (default 4)</string>
-    <string name="captcha_title">Verify You Are Human</string>
-    <string name="captcha_loading">Loading captcha…</string>
-    <string name="captcha_error">Failed to solve captcha. Please try again.</string>
-    <string name="captcha_instructions">Please complete the verification to continue</string>
+    <string name="turn_streams_per_cred_hint">1-32 (default 4)</string>
+    <string name="turn_auto_switch">Auto switch TURN</string>
+    <string name="turn_runtime_mode">Mode</string>
+    <string name="turn_mode_checking_network">Checking network</string>
+    <string name="turn_mode_starting_proxy">Starting TURN proxy</string>
+    <string name="turn_mode_retrying_proxy">Retrying TURN proxy</string>
+    <string name="turn_mode_resolving_public_ip">Resolving Public IP</string>
+    <string name="turn_mode_public_ip_resolved">Public IP resolved</string>
+    <string name="turn_mode_public_ip_unavailable">Public IP unavailable</string>
+    <string name="turn_mode_active">TURN active</string>
+    <string name="turn_mode_active_streams">TURN, streams (%1$d)</string>
+    <string name="turn_mode_active_streams_full">TURN active (%1$d/%2$d streams)</string>
+    <string name="turn_mode_active_streams_partial_credentials">TURN active (%1$d/%2$d), obtaining credentials for %3$d</string>
+    <string name="turn_mode_active_streams_partial_captcha">TURN active (%1$d/%2$d), waiting VK captcha for %3$d</string>
+    <string name="turn_mode_active_streams_partial_quota">TURN active (%1$d/%2$d), server quota reached for %3$d</string>
+    <string name="turn_mode_waiting_captcha_tap">Waiting for VK captcha solving (%1$d pending)</string>
+    <string name="turn_mode_tap_to_solve_hint">Tap to solve VK captcha</string>
+    <string name="turn_mode_tap_to_retry_hint">Tap to restart TURN</string>
+    <string name="turn_mode_direct">Standard connection (TURN not used)</string>
+    <string name="turn_mode_stopped_error">TURN stopped due to startup error</string>
+    <string name="turn_mode_stopped_streams">TURN stopped (last active: %1$d/%2$d streams)</string>
+    <string name="turn_runtime_client_ip">Public IP</string>
+    <string name="turn_runtime_errors">Errors</string>
+    <string name="turn_runtime_error_details">%1$d: %2$s</string>
+    <string name="turn_runtime_relay_ip">Relay IP</string>
+    <string name="turn_runtime_last_sync">Last sync</string>
+    <string name="ota_manual_update_title">Check app update now</string>
+    <string name="ota_manual_update_summary_default">Check and install OTA update for this build type</string>
+    <string name="ota_manual_update_summary_ready">Ready to install: %1$s (%2$d)</string>
+    <string name="ota_manual_update_summary_checking">Checking update…</string>
+    <string name="ota_check_in_progress">Update check already in progress</string>
+    <string name="ota_latest_installed">Latest version is already installed</string>
+    <string name="ota_update_started">Update install started (%s)</string>
+    <string name="ota_stage_checking">Checking update…</string>
+    <string name="ota_stage_manifest_loaded">Update found: %1$s (%2$d)</string>
+    <string name="ota_stage_manifest_loaded_name">Update found: %1$s</string>
+    <string name="ota_stage_downloading">Downloading update…</string>
+    <string name="ota_stage_downloading_percent">Downloading update… %1$d%%</string>
+    <string name="ota_stage_downloading_long">Downloading update, please keep VPN connected…</string>
+    <string name="ota_stage_download_interrupted">Update download was interrupted. Retry with VPN enabled.</string>
+    <string name="ota_stage_downloaded_verified">APK downloaded and verified</string>
+    <string name="ota_stage_installing">Passing update to system installer…</string>
+    <string name="ota_stage_cached_ready">Using cached update: %s</string>
+    <string name="ota_stage_confirm_install">Confirm installation in system dialog</string>
+    <string name="ota_failed_with_reason">Update failed: %s</string>
+    <string name="ota_network_error_user_friendly">Unable to reach the update server. Please try again with VPN enabled.</string>
+    <string name="ota_request_canceled">Update check canceled. Please try again.</string>
+    <string name="ota_install_failed_short">Update failed</string>
+    <string name="ota_install_aborted">Installation was canceled</string>
+    <string name="ota_notification_channel_name">OTA updates</string>
+    <string name="ota_notification_channel_description">Shows OTA download and install progress</string>
+    <string name="ota_notification_title">WG Turn update</string>
+    <string name="ota_notification_ready_next_launch">Ready to install on next launch: %1$s (%2$d)</string>
+    <string name="ota_notification_installed_open">Update installed. Tap to open the updated app.</string>
+    <string name="turn_captcha_channel_name">VK captcha</string>
+    <string name="turn_captcha_channel_desc">Alerts when VK login needs manual captcha solving</string>
+    <string name="turn_failure_channel_name">TURN errors</string>
+    <string name="turn_failure_channel_desc">Alerts when TURN proxy fails to start</string>
+    <string name="turn_vk_captcha_notification_title_one">VK captcha needs solving</string>
+    <string name="turn_vk_captcha_notification_title_many">%d VK captchas need solving</string>
+    <string name="turn_vk_captcha_notification_text_one">Tap to solve the VK captcha</string>
+    <string name="turn_vk_captcha_notification_text_many">Tap to solve pending VK captchas</string>
+    <string name="turn_failure_notification_title">TURN proxy failed to start</string>
+    <string name="turn_failure_notification_text">TURN proxy is not running. Tap to reconnect.</string>
 </resources>

@@ -19,9 +19,10 @@ data class TurnSettings(
     val localPort: Int = 9000,
     val turnIp: String = "",
     val turnPort: Int = 0,
-    val peerType: String = "proxy_v2",  // "proxy_v2", "proxy_v1", "wireguard"
+    val peerType: String = "proxy_v2_meta",
     val streamsPerCred: Int = 4,
     val watchdogTimeout: Int = 0,
+    val autoSwitchTurn: Boolean = true,
 ) {
     fun toComments(): List<String> {
         val lines = mutableListOf(
@@ -35,11 +36,13 @@ data class TurnSettings(
             "#@wgt:StreamNum = $streams",
             "#@wgt:LocalPort = $localPort",
             "#@wgt:PeerType = $peerType",
-            "#@wgt:StreamsPerCred = $streamsPerCred"
+            "#@wgt:StreamsPerCred = $streamsPerCred",
         )
         if (turnIp.isNotBlank()) lines.add("#@wgt:TurnIP = $turnIp")
         if (turnPort > 0) lines.add("#@wgt:TurnPort = $turnPort")
         if (watchdogTimeout > 0) lines.add("#@wgt:WatchdogTimeout = $watchdogTimeout")
+        if (peerType == "wireguard") lines.add("#@wgt:NoDTLS = true")
+        lines.add("#@wgt:AutoSwitchTURN = $autoSwitchTurn")
         return lines
     }
 
@@ -54,10 +57,11 @@ data class TurnSettings(
             var localPort = 9000
             var turnIp = ""
             var turnPort = 0
-            var peerType: String? = null  // null means not set, will be determined from noDtls
+            var peerType: String? = null
+            var noDtlsLegacy = false
             var streamsPerCred = 4
             var watchdogTimeout = 0
-            var noDtlsLegacy = false
+            var autoSwitchTurn = true
             var foundAny = false
 
             for (line in comments) {
@@ -78,19 +82,37 @@ data class TurnSettings(
                     "localport" -> localPort = value.toIntOrNull() ?: 9000
                     "turnip" -> turnIp = value
                     "turnport" -> turnPort = value.toIntOrNull() ?: 0
-                    "watchdogtimeout" -> watchdogTimeout = value.toIntOrNull() ?: 0
-                    "nodtls" -> noDtlsLegacy = value.toBoolean()  // legacy, for backward compatibility
                     "peertype" -> peerType = value
                     "streamspercred" -> streamsPerCred = value.toIntOrNull() ?: 4
+                    "watchdogtimeout" -> watchdogTimeout = value.toIntOrNull() ?: 0
+                    "nodtls" -> noDtlsLegacy = value.toBoolean()
+                    "autoswitchturn" -> autoSwitchTurn = value.toBoolean()
                 }
             }
 
-            // Backward compatibility: if peerType is not set, derive from legacy noDtls
             if (peerType == null) {
-                peerType = if (noDtlsLegacy) "wireguard" else "proxy_v2"
+                peerType = if (noDtlsLegacy) "wireguard" else "proxy_v2_meta"
             }
 
-            return if (foundAny) TurnSettings(enabled, peer, vkLink, mode, streams, useUdp, localPort, turnIp, turnPort, peerType, streamsPerCred, watchdogTimeout) else null
+            return if (foundAny) {
+                TurnSettings(
+                    enabled = enabled,
+                    peer = peer,
+                    vkLink = vkLink,
+                    mode = mode,
+                    streams = streams,
+                    useUdp = useUdp,
+                    localPort = localPort,
+                    turnIp = turnIp,
+                    turnPort = turnPort,
+                    peerType = peerType,
+                    streamsPerCred = streamsPerCred,
+                    watchdogTimeout = watchdogTimeout,
+                    autoSwitchTurn = autoSwitchTurn,
+                )
+            } else {
+                null
+            }
         }
 
         fun validate(settings: TurnSettings): TurnSettings {
@@ -100,22 +122,23 @@ data class TurnSettings(
             if (settings.mode != "wb") {
                 require(settings.vkLink.isNotBlank()) { "VK link is empty" }
             }
-            require(settings.streams in 1..16) { "Streams must be between 1 and 16" }
+            require(settings.streams in 1..32) { "Streams must be between 1 and 32" }
             require(settings.localPort in 1..65535) { "Local port must be between 1 and 65535" }
-            require(settings.peerType in listOf("proxy_v2", "proxy_v1", "wireguard")) { "Invalid peer type: ${settings.peerType}" }
-            require(settings.streamsPerCred in 1..16) { "Streams per credentials must be between 1 and 16" }
+            require(settings.peerType in listOf("proxy_v2_meta", "proxy_v2", "proxy_v1", "wireguard")) {
+                "Invalid peer type: ${settings.peerType}"
+            }
+            require(settings.streamsPerCred in 1..32) { "Streams per credentials must be between 1 and 32" }
 
             if (settings.turnPort != 0) {
                 require(settings.turnPort in 1..65535) { "TURN port must be between 1 and 65535" }
             }
-
             if (settings.watchdogTimeout > 0) {
-                require(settings.watchdogTimeout >= 5) { "Watchdog timeout must be at least 5 seconds or 0 to disable" }
+                require(settings.watchdogTimeout >= 5) {
+                    "Watchdog timeout must be at least 5 seconds or 0 to disable"
+                }
             }
 
-            // Very small sanity check for host:port format; full validation is done later when applying.
             require(':' in settings.peer) { "TURN peer must be in host:port format" }
-
             return settings
         }
     }

@@ -1,0 +1,4 @@
+storeFile=/absolute/path/to/wgturn-release.jks
+storePassword=change-me
+keyAlias=wgturn
+keyPassword=change-me

@@ -287,7 +287,7 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:Mode = vk_link
 #@wgt:StreamNum = 4
 #@wgt:LocalPort = 9000
-#@wgt:PeerType = proxy_v2          # proxy_v2 | proxy_v1 | wireguard
+#@wgt:PeerType = proxy_v2_meta     # proxy_v2_meta | proxy_v2 | proxy_v1 | wireguard
 #@wgt:StreamsPerCred = 4           # потоков на один кэш credentials
 #@wgt:TurnIP = 1.2.3.4             # (optional) Override TURN server IP
 #@wgt:TurnPort = 12345             # (optional) Override TURN server port
@@ -295,7 +295,7 @@ AllowedIPs = 0.0.0.0/0
 
 **Обратная совместимость:**
 - При чтении legacy конфигов с `#@wgt:NoDTLS = true` автоматически устанавливается `peerType = "wireguard"`
-- Если `NoDTLS` не указан или `false` — `peerType = "proxy_v2"`
+- Если `NoDTLS` не указан или `false` — `peerType = "proxy_v2_meta"`
 
 **Обработка extraLines:**
 - Строки начинающиеся с `#@` сохраняются в `Peer.extraLines`
@@ -331,13 +331,14 @@ AllowedIPs = 0.0.0.0/0
 
 | Тип | DTLS | Session ID Handshake | Описание |
 |-----|------|---------------------|----------|
-| `proxy_v2` | Да | Да | Полный режим с DTLS и агрегацией потоков на сервере |
+| `proxy_v2_meta` | Да | Да | Полный режим с DTLS, агрегацией потоков и дополнительной метой |
+| `proxy_v2` | Да | Да | DTLS и агрегацией потоков на сервере без дополнительной меты |
 | `proxy_v1` | Да | Нет | DTLS без передачи Session ID/Stream ID |
 | `wireguard` | Нет | Нет | Прямой relay без DTLS (для отладки или прямого подключения) |
 
 **Пример:**
 ```
-#@wgt:PeerType = proxy_v2
+#@wgt:PeerType = proxy_v2_meta
 ```
 
 ### Streams Per Credentials
