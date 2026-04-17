@@ -77,14 +77,7 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         }
 
     @get:Bindable
-    var watchdogTimeout: String = ""
-        set(value) {
-            field = value
-            notifyPropertyChanged(BR.watchdogTimeout)
-        }
-
-    @get:Bindable
-    var peerType: String = "proxy_v2"
+    var peerType: String = "proxy_v2_meta"
         set(value) {
             field = value
             notifyPropertyChanged(BR.peerType)
@@ -95,6 +88,48 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         set(value) {
             field = value
             notifyPropertyChanged(BR.streamsPerCred)
+        }
+
+    @get:Bindable
+    var watchdogTimeout: String = ""
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.watchdogTimeout)
+        }
+
+    @get:Bindable
+    var autoSwitchTurn: Boolean = true
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.autoSwitchTurn)
+        }
+
+    @get:Bindable
+    var vkCredentialsProfile: String = "web_app"
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.vkCredentialsProfile)
+        }
+
+    @get:Bindable
+    var streamStartDelayMs: String = ""
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.streamStartDelayMs)
+        }
+
+    @get:Bindable
+    var startupTimeoutSec: String = ""
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.startupTimeoutSec)
+        }
+
+    @get:Bindable
+    var quotaBackoffSec: String = ""
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.quotaBackoffSec)
         }
 
     @get:Bindable
@@ -114,9 +149,14 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         localPort = parcel.readString() ?: ""
         turnIp = parcel.readString() ?: ""
         turnPort = parcel.readString() ?: ""
-        watchdogTimeout = parcel.readString() ?: ""
-        peerType = parcel.readString() ?: "proxy_v2"
+        peerType = parcel.readString() ?: "proxy_v2_meta"
         streamsPerCred = parcel.readString() ?: ""
+        watchdogTimeout = parcel.readString() ?: ""
+        autoSwitchTurn = parcel.readInt() != 0
+        vkCredentialsProfile = parcel.readString() ?: "web_app"
+        streamStartDelayMs = parcel.readString() ?: ""
+        startupTimeoutSec = parcel.readString() ?: ""
+        quotaBackoffSec = parcel.readString() ?: ""
         advancedExpanded = parcel.readInt() != 0
     }
 
@@ -133,9 +173,14 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             localPort = other.localPort.toString()
             turnIp = other.turnIp
             turnPort = if (other.turnPort > 0) other.turnPort.toString() else ""
-            watchdogTimeout = if (other.watchdogTimeout > 0) other.watchdogTimeout.toString() else ""
             peerType = other.peerType
             streamsPerCred = other.streamsPerCred.toString()
+            watchdogTimeout = if (other.watchdogTimeout > 0) other.watchdogTimeout.toString() else ""
+            autoSwitchTurn = other.autoSwitchTurn
+            vkCredentialsProfile = other.vkCredentialsProfile
+            streamStartDelayMs = other.streamStartDelayMs.toString()
+            startupTimeoutSec = other.startupTimeoutSec.toString()
+            quotaBackoffSec = other.quotaBackoffSec.toString()
         }
     }
 
@@ -151,9 +196,14 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         dest.writeString(localPort)
         dest.writeString(turnIp)
         dest.writeString(turnPort)
-        dest.writeString(watchdogTimeout)
         dest.writeString(peerType)
         dest.writeString(streamsPerCred)
+        dest.writeString(watchdogTimeout)
+        dest.writeInt(if (autoSwitchTurn) 1 else 0)
+        dest.writeString(vkCredentialsProfile)
+        dest.writeString(streamStartDelayMs)
+        dest.writeString(startupTimeoutSec)
+        dest.writeString(quotaBackoffSec)
         dest.writeInt(if (advancedExpanded) 1 else 0)
     }
 
@@ -162,11 +212,14 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
         val parsedStreams = streams.toIntOrNull() ?: 4
         val parsedPort = localPort.toIntOrNull() ?: 9000
         val parsedTurnPort = turnPort.toIntOrNull() ?: 0
-        val parsedWatchdogTimeout = watchdogTimeout.toIntOrNull() ?: 0
         val parsedStreamsPerCred = streamsPerCred.toIntOrNull() ?: 4
+        val parsedWatchdogTimeout = watchdogTimeout.toIntOrNull() ?: 0
+        val parsedStreamStartDelayMs = streamStartDelayMs.toIntOrNull() ?: 200
+        val parsedStartupTimeoutSec = startupTimeoutSec.toIntOrNull() ?: 75
+        val parsedQuotaBackoffSec = quotaBackoffSec.toIntOrNull() ?: 15
 
         if (enabled) {
-            if (parsedStreams !in 1..16) {
+            if (parsedStreams !in 1..32) {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streams)
             }
 
@@ -177,13 +230,23 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             if (turnPort.isNotEmpty() && parsedTurnPort !in 1..65535) {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, turnPort)
             }
-
+            if (parsedStreamsPerCred !in 1..32) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streamsPerCred)
+            }
             if (watchdogTimeout.isNotEmpty() && parsedWatchdogTimeout > 0 && parsedWatchdogTimeout < 5) {
                 throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, watchdogTimeout)
             }
-
-            if (parsedStreamsPerCred !in 1..16) {
-                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streamsPerCred)
+            if (streamStartDelayMs.isNotEmpty() && parsedStreamStartDelayMs !in 0..5000) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, streamStartDelayMs)
+            }
+            if (startupTimeoutSec.isNotEmpty() && parsedStartupTimeoutSec !in 10..300) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, startupTimeoutSec)
+            }
+            if (quotaBackoffSec.isNotEmpty() && parsedQuotaBackoffSec !in 1..600) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, quotaBackoffSec)
+            }
+            if (!TurnSettings.supportedVkCredentialProfiles().contains(vkCredentialsProfile)) {
+                throw BadConfigException(BadConfigException.Section.INTERFACE, BadConfigException.Location.TOP_LEVEL, BadConfigException.Reason.INVALID_VALUE, vkCredentialsProfile)
             }
 
             if (peer.isBlank()) {
@@ -210,6 +273,11 @@ class TurnSettingsProxy : BaseObservable, Parcelable {
             peerType = peerType,
             streamsPerCred = parsedStreamsPerCred,
             watchdogTimeout = parsedWatchdogTimeout,
+            autoSwitchTurn = autoSwitchTurn,
+            vkCredentialsProfile = vkCredentialsProfile,
+            streamStartDelayMs = parsedStreamStartDelayMs,
+            startupTimeoutSec = parsedStartupTimeoutSec,
+            quotaBackoffSec = parsedQuotaBackoffSec,
         )
         if (enabled) {
             TurnSettings.validate(settings)

@@ -17,8 +17,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Monitors physical networks (WiFi, Cellular) and provides the "best" available one.
- * Ignores VPN interfaces to avoid tracking our own tunnel.
- * Priority: WiFi > Cellular.
+ * Ignores VPN interfaces to avoid tracking our own tunnel and prefers the
+ * currently active non-VPN network when one exists.
  */
 class PhysicalNetworkMonitor(context: Context) {
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -62,13 +62,20 @@ class PhysicalNetworkMonitor(context: Context) {
     }
 
     private fun update() {
-        // Priority logic: WiFi first, then Cellular, then any other physical network with internet
-        val wifi = networks.entries.find { it.value.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) }?.key
-        val cell = networks.entries.find { it.value.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) }?.key
-        
-        // If no WiFi/Cellular found, take the first available network from our list
-        val best = wifi ?: cell ?: networks.keys.firstOrNull()
-        _bestNetwork.value = best
+        val active = cm.activeNetwork?.takeIf { network ->
+            val caps = networks[network] ?: cm.getNetworkCapabilities(network) ?: return@takeIf false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        }
+        if (active != null) {
+            _bestNetwork.value = active
+            return
+        }
+
+        val validated = networks.entries.firstOrNull { entry ->
+            entry.value.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }?.key
+        _bestNetwork.value = validated ?: networks.keys.firstOrNull()
     }
 
     fun start() {

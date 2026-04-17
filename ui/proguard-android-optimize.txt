@@ -36,6 +36,8 @@
 
 # Keep TurnBackend methods called from JNI via reflection
 -keep class com.wireguard.android.backend.TurnBackend {
-    public static void setCaptchaHandler(java.util.function.Function);
-    public static java.lang.String onCaptchaRequired(java.lang.String);
+    public static void setCaptchaHandler(com.wireguard.android.backend.TurnBackend$CaptchaHandler);
+    public static java.lang.String fetchUrlOnCurrentNetwork(java.lang.String, java.lang.String);
+    public static java.lang.String postUrlOnCurrentNetwork(java.lang.String, java.lang.String, java.lang.String);
+    public static java.lang.String onCaptchaRequired(int, java.lang.String);
 }

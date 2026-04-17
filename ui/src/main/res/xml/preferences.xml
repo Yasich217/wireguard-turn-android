@@ -7,6 +7,8 @@
     <com.wireguard.android.preference.VersionPreference
         android:icon="@mipmap/ic_launcher"
         android:key="version" />
+    <com.wireguard.android.preference.ManualUpdatePreference
+        android:key="manual_ota_update" />
     <CheckBoxPreference
         android:defaultValue="false"
         android:key="restore_on_boot"

@@ -2,7 +2,7 @@
 
 This is a specialized fork of the official [WireGuard Android](https://git.zx2c4.com/wireguard-android) client with integrated support for **VK TURN Proxy**.
 
-It allows WireGuard traffic to be encapsulated within DTLS/TURN streams using the VK Calls infrastructure, providing a robust way to bypass network restrictions while maintaining high performance and stability.
+It encapsulates WireGuard traffic inside DTLS/TURN streams via VK Calls and WB Stream. This fork keeps the stock WireGuard UI, OTA updates, extended TURN status in the interface, and the additional metadata path used by `proxy_v2_meta`.
 
 ## Important Disclaimer
 
@@ -15,11 +15,18 @@ Unauthorized use of the VK Calls infrastructure (TURN servers) without explicit 
 - **Native Integration**: The TURN client is integrated directly into `libwg-go.so` for maximum performance and minimal battery impact.
 - **Two Authentication Modes**:
   - **VK Link** — Automated retrieval of TURN credentials via VK Calls anonymous tokens.
-  - **WB** — Automated retrieval of TURN credentials via WB Stream API (guest registration → room creation → LiveKit ICE).
-- **Multi-Stream Load Balancing**: High performance and reliability with parallel DTLS streams, Session ID aggregation, and round-robin outbound balancing.
-- **Custom DNS Resolver**: All HTTP and WebSocket requests go through a built-in DNS resolver with socket protection via VPN.
-- **MTU Optimization**: Automatic MTU adjustment to 1280 when using TURN to ensure encapsulated packets fit standard network limits.
-- **Auto-Reconnect on Network Change**: Automatic TURN restart when switching between WiFi and 4G/5G with debounce protection.
+  - **WB** — Automated retrieval of TURN credentials via WB Stream API.
+- **Protocol Modes**:
+  - **proxy_v2_meta** — our default mode, with extra metadata and server-side webhook/script hooks.
+  - **proxy_v2** — Session ID based DTLS mode from the fork.
+  - **proxy_v1** — legacy DTLS mode for older servers.
+  - **wireguard** — direct relay without DTLS.
+- **Multi-Stream Load Balancing**: parallel DTLS streams, Session ID aggregation, and round-robin outbound balancing.
+- **VK captcha popup**: automatic captcha solving with a WebView popup fallback when manual confirmation is required.
+- **OTA and status UI**: debug/release OTA, notifications, and extended TURN runtime status/errors in the interface.
+- **Custom DNS Resolver**: all HTTP and WebSocket requests go through a built-in DNS resolver with socket protection via VPN.
+- **MTU Optimization**: automatic MTU adjustment to 1280 when using TURN to ensure encapsulated packets fit standard network limits.
+- **Auto-Reconnect on Network Change**: automatic TURN restart when switching between WiFi and 4G/5G with debounce protection.
 - **Fast Network Recovery**: DNS and HTTP connection reset on network change for quick reconnection.
 - **Seamless Configuration**: TURN settings are stored directly inside standard WireGuard `.conf` files as special metadata comments (`#@wgt:`).
 
@@ -30,7 +37,7 @@ This project is built upon the foundations laid by:
 2. **[vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy)** — the author of the original idea and inspiration for this project.
 3. **[lionheart](https://github.com/jaykaiperson/lionheart)** — The original WB mode implementation for TURN credentials retrieval.
 
-> **Important**: For correct client operation (Session ID stream aggregation), it is recommended to use the v2 server-side implementation from the [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy) fork.
+> **Important**: For correct client operation, it is recommended to use the `proxy_v2_meta` server-side implementation from our fork [Yasich217/vk-turn-proxy](https://github.com/Yasich217/vk-turn-proxy) (based on [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)).
 
 ## Building
 
@@ -57,7 +64,7 @@ AllowedIPs = 0.0.0.0/0
 #@wgt:IPPort = 1.2.3.4:56000
 #@wgt:VKLink = https://vk.com/call/join/...
 #@wgt:Mode = vk_link              # Auth mode: vk_link or wb
-#@wgt:PeerType = proxy_v2          # proxy_v2 | proxy_v1 | wireguard
+#@wgt:PeerType = proxy_v2_meta     # proxy_v2_meta | proxy_v2 | proxy_v1 | wireguard
 #@wgt:StreamNum = 4
 #@wgt:LocalPort = 9000
 #@wgt:StreamsPerCred = 4           # Streams per credentials cache
@@ -69,50 +76,19 @@ AllowedIPs = 0.0.0.0/0
 ```
 
 **Note:** The `PeerType` parameter determines the operating mode:
-- `proxy_v2` (default) — DTLS with Session ID transmission for stream aggregation (server: [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy))
+- `proxy_v2_meta` (default) — DTLS with Session ID transmission plus additional metadata for server-side webhooks/scripts (server: [Yasich217/vk-turn-proxy](https://github.com/Yasich217/vk-turn-proxy))
+- `proxy_v2` — DTLS with Session ID transmission for stream aggregation
 - `proxy_v1` — DTLS without Session ID handshake (server: [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy))
 - `wireguard` — no DTLS, direct relay (NoDTLS, for debugging or direct connection)
 
 **Watchdog Timeout:** The `WatchdogTimeout` parameter enables inactivity monitoring for DTLS mode:
 - `0` (default) — watchdog disabled
 - `≥5` — timeout in seconds; if no packets are received from the TURN server within this time, the connection is re-established
-- Applies only to `proxy_v2` and `proxy_v1` modes
+- Applies only to `proxy_v2_meta`, `proxy_v2`, and `proxy_v1` modes
 
 For more technical details, see [info/TURN_INTEGRATION_DETAILS.md](info/TURN_INTEGRATION_DETAILS.md).
 
 ## Donations
-
-Are welcome here:
-
-<img width="16" height="16" alt="bitcoin" src="https://github.com/user-attachments/assets/ea73b5cc-cba4-4428-8704-d5345acf58d4" /> BTC:
-```plaintext
-1ERKmMSyfxtKNNpU3TeaYCaJfDKY9s8jdX
-```
-
-<img width="16" height="16" alt="ethereum" src="https://github.com/user-attachments/assets/2a2fcba2-66d9-4eb9-a5e7-35e6889f76f0" /> ETH Ethereum (ERC20):
-```plaintext
-0xfa8fdae60010e3d6b446d7479a9ccacfc56c0936
-```
-
-<img width="16" height="16" alt="tether" src="https://github.com/user-attachments/assets/9f88aa41-fcfd-48ea-ae5a-c0bef933666d" /> USDT TRON (TRC20):
-```plaintext
-TMgojRMiya1nJ2uEtw8u7p5YZ9J7Ykdmd9
-```
-
-<img width="16" height="16" alt="tether" src="https://github.com/user-attachments/assets/9f88aa41-fcfd-48ea-ae5a-c0bef933666d" /> USDT APTOS:
-```plaintext
-0x741a8b707b75aa57dc603fa30d1c4750198866b0e9eb6d9a7a1a7dde8ec7f4d2
-```
-
-<img width="16" height="16" alt="tontoken" src="https://github.com/user-attachments/assets/14e9293f-5ca2-49fe-b5ae-4bf48be065a4" /> TON / USDT TON:
-```plaintext
-UQD0BQTBSVo19hrjKyXnRc61MXW0j9dTZaLEXOUJwxLT2qRQ
-```
-
-<img width="16" height="16" alt="litecoin" src="https://github.com/user-attachments/assets/193b09c3-eca6-4feb-b887-a603813c11eb" /> LTC:
-```plaintext
-La2H1YD2zKxqhsziGrx74anjJYwAQJ67er
-```
 
 ## Contributing
 

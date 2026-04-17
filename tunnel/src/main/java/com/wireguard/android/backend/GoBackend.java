@@ -5,8 +5,12 @@
 
 package com.wireguard.android.backend;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.system.OsConstants;
@@ -42,6 +46,9 @@ import androidx.collection.ArraySet;
 public final class GoBackend implements Backend {
     private static final int DNS_RESOLUTION_RETRIES = 10;
     private static final String TAG = "WireGuard/GoBackend";
+    private static final String EXTRA_KERNEL_HELPER = "com.wireguard.android.backend.GoBackend.kernel_helper";
+    private static final String KERNEL_HELPER_CHANNEL_ID = "kernel_turn_helper";
+    private static final int KERNEL_HELPER_NOTIFICATION_ID = 0x5747;
     @Nullable private static AlwaysOnCallback alwaysOnCallback;
     private static CompletableFuture<VpnService> vpnService = new CompletableFuture<>();
     private final Context context;
@@ -296,6 +303,9 @@ public final class GoBackend implements Backend {
             // Create the vpn tunnel with android API
             final VpnService.Builder builder = service.getBuilder();
             builder.setSession(tunnel.getName());
+            // Allow app-selected non-VPN networks (Network.openConnection / bindSocket)
+            // for TURN credential/bootstrap requests while the main tunnel is still coming up.
+            builder.allowBypass();
 
             for (final String excludedApplication : config.getInterface().getExcludedApplications())
                 builder.addDisallowedApplication(excludedApplication);
@@ -372,7 +382,6 @@ public final class GoBackend implements Backend {
 
         tunnel.onStateChange(state);
     }
-
     /**
      * Callback for {@link GoBackend} that is invoked when {@link VpnService} is started by the
      * system's Always-On VPN mode.
@@ -386,6 +395,38 @@ public final class GoBackend implements Backend {
      */
     public static class VpnService extends android.net.VpnService {
         @Nullable private GoBackend owner;
+
+        private void promoteToForeground() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                final NotificationManager notificationManager = getSystemService(NotificationManager.class);
+                if (notificationManager != null) {
+                    final NotificationChannel channel = new NotificationChannel(
+                        KERNEL_HELPER_CHANNEL_ID,
+                        "WG Turn kernel helper",
+                        NotificationManager.IMPORTANCE_LOW
+                    );
+                    notificationManager.createNotificationChannel(channel);
+                }
+            }
+
+            final Notification notification = new Notification.Builder(this, KERNEL_HELPER_CHANNEL_ID)
+                .setContentTitle("WG Turn")
+                .setContentText("Kernel TURN helper is active")
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setOngoing(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build();
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    KERNEL_HELPER_NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
+                );
+            } else {
+                startForeground(KERNEL_HELPER_NOTIFICATION_ID, notification);
+            }
+        }
 
         public Builder getBuilder() {
             return new Builder();
@@ -409,6 +450,11 @@ public final class GoBackend implements Backend {
 
         @Override
         public void onDestroy() {
+            // Ensure TURN hub is stopped even if the tunnel state is being torn down externally
+            // (e.g. when another VPN takes over).
+            try {
+                TurnBackend.wgTurnProxyStop();
+            } catch (final Throwable ignored) { }
             // Unregister from TurnBackend
             TurnBackend.onVpnServiceCreated(null);
             if (owner != null) {
@@ -431,9 +477,60 @@ public final class GoBackend implements Backend {
         }
 
         @Override
+        public void onRevoke() {
+            // Called when the system revokes this VPN (for example because another VPN was started).
+            // We must promptly tear down WireGuard and TURN, otherwise:
+            // 1) UI may show stale "running" state, and
+            // 2) the next VPN instance (including another installed build) may fail to start due to
+            //    local port/socket conflicts.
+            Log.w(TAG, "VpnService.onRevoke() called; tearing down tunnel/turn");
+            try {
+                TurnBackend.wgTurnProxyStop();
+            } catch (final Throwable t) {
+                Log.w(TAG, "Failed to stop TURN proxy on revoke: " + t.getMessage());
+            }
+            try {
+                TurnBackend.onVpnServiceCreated(null);
+            } catch (final Throwable ignored) { }
+            try {
+                TurnBackend.notifyVpnServiceRevoked();
+            } catch (final Throwable ignored) { }
+            if (owner != null) {
+                final Tunnel tunnel = owner.currentTunnel;
+                if (tunnel != null) {
+                    try {
+                        if (owner.currentTunnelHandle != -1)
+                            wgTurnOff(owner.currentTunnelHandle);
+                    } catch (final Throwable ignored) { }
+                    owner.currentTunnel = null;
+                    owner.currentTunnelHandle = -1;
+                    owner.currentConfig = null;
+                    try {
+                        tunnel.onStateChange(State.DOWN);
+                    } catch (final Throwable ignored) { }
+                }
+            }
+            // Ensure future doesn't stay completed with a revoked service instance.
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    vpnService = vpnService.newIncompleteFuture();
+                else
+                    vpnService = new CompletableFuture<>();
+            } catch (final Throwable ignored) { }
+            try {
+                stopForeground(true);
+            } catch (final Throwable ignored) { }
+            stopSelf();
+            super.onRevoke();
+        }
+
+        @Override
         public int onStartCommand(@Nullable final Intent intent, final int flags, final int startId) {
             // Also complete on start command for robustness
             vpnService.complete(this);
+            if (intent != null && intent.getBooleanExtra(EXTRA_KERNEL_HELPER, false)) {
+                promoteToForeground();
+            }
             // Note: TurnBackend.onVpnServiceCreated() is called in onCreate(), no need to call again here
             if (intent == null || intent.getComponent() == null || !intent.getComponent().getPackageName().equals(getPackageName())) {
                 Log.d(TAG, "Service started by Always-on VPN feature");

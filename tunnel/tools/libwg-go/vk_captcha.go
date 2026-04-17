@@ -7,7 +7,8 @@ package main
 
 /*
 #include <stdlib.h>
-extern const char* requestCaptcha(const char* redirect_uri);
+extern const char* requestCaptcha(int cache_id, const char* redirect_uri);
+extern char* wgFetchUrlWithCurrentNetwork(const char* raw_url, const char* user_agent);
 */
 import "C"
 
@@ -107,14 +108,26 @@ func (e *VkCaptchaError) IsCaptchaError() bool {
 // captchaMutex serializes captcha solving to avoid multiple concurrent attempts
 var captchaMutex sync.Mutex
 
-// solveVkCaptcha solves the VK Not Robot Captcha and returns success_token
-// First tries automatic solution, falls back to WebView if it fails
-func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError) (string, error) {
+const (
+	// Keep Go-side captcha HTTP fingerprint aligned with Android WebView.
+	// This impacts whether VK serves checkbox vs slider challenges.
+	captchaUserAgentMobile  = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
+	captchaUserAgentDesktop = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+)
+
+// solveVkCaptcha solves the VK Not Robot Captcha and returns success_token.
+// First tries automatic solution, then falls back to our cache-aware WebView flow.
+func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID int) (string, error) {
 	// Serialize captcha solving to avoid multiple concurrent attempts
 	captchaMutex.Lock()
 	defer captchaMutex.Unlock()
 
 	turnLog("[Captcha] Solving Not Robot Captcha...")
+	if captchaErr != nil {
+		turnLog("[Captcha] fingerprint ua=%s", captchaUserAgentMobile)
+		logLongString("[Captcha] redirect_uri", captchaErr.RedirectUri, 180)
+		turnLog("[Captcha] session_token=%s captcha_ts=%s captcha_attempt=%s", truncateString(captchaErr.SessionToken, 16), captchaErr.CaptchaTs, captchaErr.CaptchaAttempt)
+	}
 
 	// Step 1: Try automatic solution
 	turnLog("[Captcha] Attempting automatic solution...")
@@ -125,19 +138,26 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError) (string, er
 	}
 
 	turnLog("[Captcha] Automatic solution FAILED: %v", err)
+	if isCaptchaLimitError(err) {
+		// When VK returns ERROR_LIMIT, manual WebView flow will show the same limit page.
+		// Return immediately so upper layers can continue fallback logic (other creds/retry policy)
+		// instead of forcing user through a doomed captcha page.
+		return "", fmt.Errorf("captcha rate limit reached: %w", err)
+	}
 	turnLog("[Captcha] Falling back to WebView...")
 
 	// Step 2: Fall back to WebView
 	turnLog("[Captcha] Opening WebView for manual solving...")
 	redirectURICStr := C.CString(captchaErr.RedirectUri)
 	defer C.free(unsafe.Pointer(redirectURICStr))
-	
-	cToken := C.requestCaptcha(redirectURICStr)
+
+	cacheID := streamID / streamsPerCred
+	cToken := C.requestCaptcha(C.int(cacheID), redirectURICStr)
 	if cToken == nil {
 		return "", fmt.Errorf("WebView captcha solving failed: returned nil token")
 	}
 	defer C.free(unsafe.Pointer(cToken))
-	
+
 	successToken = C.GoString(cToken)
 	if successToken == "" {
 		return "", fmt.Errorf("WebView captcha solving failed: returned empty token")
@@ -147,6 +167,14 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError) (string, er
 	return successToken, nil
 }
 
+func isCaptchaLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToUpper(err.Error())
+	return strings.Contains(msg, "ERROR_LIMIT") || strings.Contains(msg, "LIMIT")
+}
+
 // solveVkCaptchaAutomatic performs the automatic captcha solving without UI
 func solveVkCaptchaAutomatic(ctx context.Context, captchaErr *VkCaptchaError) (string, error) {
 	sessionToken := captchaErr.SessionToken
@@ -154,10 +182,20 @@ func solveVkCaptchaAutomatic(ctx context.Context, captchaErr *VkCaptchaError) (s
 		return "", fmt.Errorf("no session_token in redirect_uri")
 	}
 
-	// Step 1: Fetch the captcha HTML page to get powInput
+	// Step 1: Fetch the captcha bootstrap (settings + optional legacy inline PoW).
 	bootstrap, err := fetchCaptchaBootstrap(ctx, captchaErr.RedirectUri)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch captcha bootstrap: %w", err)
+	}
+
+	if bootstrap.PowInput == "" {
+		turnLog("[Captcha] Bootstrap did not include inline PoW; requesting initSession PoW")
+		powInput, difficulty, err := requestCaptchaInitSession(ctx, sessionToken)
+		if err != nil {
+			return "", fmt.Errorf("initSession failed: %w", err)
+		}
+		bootstrap.PowInput = powInput
+		bootstrap.Difficulty = difficulty
 	}
 
 	turnLog("[Captcha] PoW input: %s, difficulty: %d", bootstrap.PowInput, bootstrap.Difficulty)
@@ -176,8 +214,28 @@ func solveVkCaptchaAutomatic(ctx context.Context, captchaErr *VkCaptchaError) (s
 	return successToken, nil
 }
 
-// fetchCaptchaBootstrap fetches the captcha HTML page and extracts PoW input, difficulty, and settings
+// fetchCaptchaBootstrap fetches the captcha HTML page and extracts settings plus any legacy inline PoW.
 func fetchCaptchaBootstrap(ctx context.Context, redirectUri string) (*captchaBootstrap, error) {
+	cRedirectURI := C.CString(redirectUri)
+	defer C.free(unsafe.Pointer(cRedirectURI))
+	cUserAgent := C.CString(captchaUserAgentMobile)
+	defer C.free(unsafe.Pointer(cUserAgent))
+
+	if rawHTML := C.wgFetchUrlWithCurrentNetwork(cRedirectURI, cUserAgent); rawHTML != nil {
+		html := C.GoString(rawHTML)
+		C.free(unsafe.Pointer(rawHTML))
+		if strings.TrimSpace(html) != "" {
+			bootstrap, parseErr := parseCaptchaBootstrapHTML(html)
+			if parseErr == nil {
+				turnLog("[Captcha] Bootstrap fetched via Android current-network stack")
+				return bootstrap, nil
+			}
+			turnLog("[Captcha] Android current-network bootstrap parse failed: %v", parseErr)
+			logLongString("[Captcha] bootstrap_html", html, 180)
+			return nil, fmt.Errorf("android current-network bootstrap parse failed: %w", parseErr)
+		}
+	}
+
 	parsedURL, err := url.Parse(redirectUri)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse redirect_uri: %w", err)
@@ -203,7 +261,7 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectUri string) (*captchaBoo
 		return nil, err
 	}
 	req.Host = domain
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", captchaUserAgentMobile)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
@@ -239,6 +297,15 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectUri string) (*captchaBoo
 	}
 
 	return bootstrap, nil
+}
+
+func requestCaptchaInitSession(ctx context.Context, sessionToken string) (string, int, error) {
+	session := newCaptchaNotRobotSession(ctx, sessionToken, "")
+	resp, err := session.requestInitSession()
+	if err != nil {
+		return "", 0, err
+	}
+	return resp.Input, resp.Difficulty, nil
 }
 
 // solvePoW finds nonce where SHA-256(powInput + nonce) starts with '0' * difficulty
@@ -282,6 +349,11 @@ type captchaCheckResult struct {
 	Status          string
 	SuccessToken    string
 	ShowCaptchaType string
+}
+
+type captchaInitSessionResponse struct {
+	Input      string
+	Difficulty int
 }
 
 // sliderCaptchaContent holds decoded slider captcha content
@@ -338,6 +410,32 @@ func (s *captchaNotRobotSession) baseValues() url.Values {
 func (s *captchaNotRobotSession) request(method string, values url.Values) (map[string]interface{}, error) {
 	reqURL := "https://api.vk.ru/method/" + method + "?v=5.131"
 
+	if currentNetworkRaw, currentNetworkErr := postWithCurrentNetwork(reqURL, values.Encode(), captchaUserAgentMobile); currentNetworkErr == nil {
+		var networkResp currentNetworkHTTPResponse
+		if err := json.Unmarshal([]byte(currentNetworkRaw), &networkResp); err != nil {
+			turnLog("[Captcha] Current-network wrapper parse failed for %s: %v", method, err)
+		} else if !networkResp.OK {
+			preview := strings.TrimSpace(networkResp.Body)
+			if len(preview) > 500 {
+				preview = preview[:500]
+			}
+			turnLog("[Captcha] Current-network POST failed for %s: status=%d error=%s body=%s", method, networkResp.Status, networkResp.Error, preview)
+		} else {
+			var respMap map[string]interface{}
+			if err := json.Unmarshal([]byte(networkResp.Body), &respMap); err != nil {
+				preview := strings.TrimSpace(networkResp.Body)
+				if len(preview) > 500 {
+					preview = preview[:500]
+				}
+				return nil, fmt.Errorf("current-network JSON parse error: %w, body: %s", err, preview)
+			}
+			turnLog("[Captcha] Current-network POST succeeded for %s", method)
+			return respMap, nil
+		}
+	} else {
+		turnLog("[Captcha] Current-network POST unavailable for %s: %v", method, currentNetworkErr)
+	}
+
 	parsedURL, err := url.Parse(reqURL)
 	if err != nil {
 		return nil, err
@@ -364,15 +462,15 @@ func (s *captchaNotRobotSession) request(method string, values url.Values) (map[
 	}
 
 	req.Host = domain
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", captchaUserAgentMobile)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Origin", "https://vk.ru")
 	req.Header.Set("Referer", "https://vk.ru/")
-	req.Header.Set("sec-ch-ua-platform", "\"Linux\"")
+	req.Header.Set("sec-ch-ua-platform", "\"Android\"")
 	req.Header.Set("sec-ch-ua", "\"Chromium\";v=\"146\", \"Not-A.Brand\";v=\"24\", \"Google Chrome\";v=\"146\"")
-	req.Header.Set("sec-ch-ua-mobile", "?0")
+	req.Header.Set("sec-ch-ua-mobile", "?1")
 	req.Header.Set("DNT", "1")
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
@@ -419,6 +517,14 @@ func (s *captchaNotRobotSession) requestSettings() (*captchaSettingsResponse, er
 		return nil, fmt.Errorf("settings failed: %w", err)
 	}
 	return parseCaptchaSettingsResponse(resp)
+}
+
+func (s *captchaNotRobotSession) requestInitSession() (*captchaInitSessionResponse, error) {
+	resp, err := s.request("captchaNotRobot.initSession", s.baseValues())
+	if err != nil {
+		return nil, fmt.Errorf("initSession failed: %w", err)
+	}
+	return parseCaptchaInitSessionResponse(resp)
 }
 
 // requestComponentDone marks the component as done
@@ -593,9 +699,38 @@ func callCaptchaNotRobotWithSliderPOC(
 
 // buildCaptchaDeviceJSON builds device information JSON
 func buildCaptchaDeviceJSON() string {
-	return fmt.Sprintf(
-		`{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1040,"innerWidth":1920,"innerHeight":969,"devicePixelRatio":1,"language":"en-US","languages":["en-US"],"webdriver":false,"hardwareConcurrency":8,"deviceMemory":8,"connectionEffectiveType":"4g","notificationsPermission":"default"}`,
-	)
+	// Approximate an Android mobile viewport so VK serves the same challenge type
+	// as the WebView/browser that the user interacts with.
+	return `{"screenWidth":412,"screenHeight":915,"screenAvailWidth":412,"screenAvailHeight":891,"innerWidth":412,"innerHeight":835,"devicePixelRatio":2.625,"language":"en-US","languages":["en-US"],"webdriver":false,"hardwareConcurrency":8,"deviceMemory":8,"connectionEffectiveType":"4g","notificationsPermission":"default"}`
+}
+
+func truncateString(s string, maxLen int) string {
+	if maxLen <= 0 || s == "" {
+		return ""
+	}
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "...(truncated)"
+}
+
+func logLongString(prefix string, value string, chunkSize int) {
+	if value == "" {
+		turnLog("%s: <empty>", prefix)
+		return
+	}
+	if chunkSize <= 0 {
+		chunkSize = 180
+	}
+	total := (len(value) + chunkSize - 1) / chunkSize
+	for i := 0; i < len(value); i += chunkSize {
+		end := i + chunkSize
+		if end > len(value) {
+			end = len(value)
+		}
+		part := value[i:end]
+		turnLog("%s[%d/%d]=%s", prefix, (i/chunkSize)+1, total, part)
+	}
 }
 
 // parseCaptchaSettingsResponse parses captcha settings from API response
@@ -637,12 +772,19 @@ func parseCaptchaSettingsResponse(resp map[string]interface{}) (*captchaSettings
 	return settings, nil
 }
 
-// parseCaptchaBootstrapHTML parses HTML page to extract PoW input and settings
+// parseCaptchaBootstrapHTML parses HTML page to extract settings and any legacy inline PoW.
 func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
+	settings, err := parseCaptchaSettingsFromHTML(html)
+	if err != nil {
+		return nil, err
+	}
+
 	powInputRe := regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)
 	powInputMatch := powInputRe.FindStringSubmatch(html)
 	if len(powInputMatch) < 2 {
-		return nil, fmt.Errorf("powInput not found in captcha HTML")
+		return &captchaBootstrap{
+			Settings: settings,
+		}, nil
 	}
 
 	difficulty := 2
@@ -656,11 +798,6 @@ func parseCaptchaBootstrapHTML(html string) (*captchaBootstrap, error) {
 				break
 			}
 		}
-	}
-
-	settings, err := parseCaptchaSettingsFromHTML(html)
-	if err != nil {
-		return nil, err
 	}
 
 	return &captchaBootstrap{
@@ -802,6 +939,48 @@ func parseCaptchaCheckResult(resp map[string]interface{}) (*captchaCheckResult, 
 	}
 
 	return result, nil
+}
+
+func parseCaptchaInitSessionResponse(resp map[string]interface{}) (*captchaInitSessionResponse, error) {
+	respObj, ok := resp["response"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid initSession response: %v", resp)
+	}
+
+	input, _ := respObj["input"].(string)
+	difficulty := 2
+	if rawDifficulty, exists := respObj["difficulty"]; exists {
+		parsed, err := parseIntValue(rawDifficulty)
+		if err != nil {
+			return nil, fmt.Errorf("invalid initSession difficulty: %w", err)
+		}
+		difficulty = parsed
+	}
+
+	if input == "" {
+		if scriptData, _ := respObj["script_data"].(string); scriptData != "" {
+			parts := strings.Split(scriptData, "|")
+			if len(parts) >= 1 && strings.TrimSpace(parts[0]) != "" {
+				input = strings.TrimSpace(parts[0])
+			}
+			if len(parts) >= 2 && strings.TrimSpace(parts[1]) != "" {
+				parsed, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+				if err != nil {
+					return nil, fmt.Errorf("invalid initSession script_data difficulty: %w", err)
+				}
+				difficulty = parsed
+			}
+		}
+	}
+
+	if input == "" {
+		return nil, fmt.Errorf("initSession input missing: %v", respObj)
+	}
+
+	return &captchaInitSessionResponse{
+		Input:      input,
+		Difficulty: difficulty,
+	}, nil
 }
 
 // parseSliderCaptchaContentResponse parses slider captcha content from API response

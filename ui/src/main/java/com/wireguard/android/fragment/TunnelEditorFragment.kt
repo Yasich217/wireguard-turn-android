@@ -49,9 +49,9 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
         val currentTurn = tunnel?.turnSettings
         binding?.config = ConfigProxy(config, currentTurn)
         binding?.executePendingBindings()
-        // Update spinner selections after config is loaded
         updateTurnModeSpinner()
         updateTurnPeerTypeSpinner()
+        updateTurnVkCredentialsProfileSpinner()
     }
 
     private fun updateTurnModeSpinner() {
@@ -66,14 +66,31 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
 
     private fun updateTurnPeerTypeSpinner() {
         binding?.apply {
-            val currentPeerType = config?.turn?.peerType ?: "proxy_v2"
+            val currentPeerType = config?.turn?.peerType ?: "proxy_v2_meta"
             val peerTypeText = when (currentPeerType) {
+                "proxy_v2" -> getString(R.string.turn_peer_type_proxy_v2)
                 "proxy_v1" -> getString(R.string.turn_peer_type_proxy_v1)
                 "wireguard" -> getString(R.string.turn_peer_type_wireguard)
-                else -> getString(R.string.turn_peer_type_proxy_v2)
+                else -> getString(R.string.turn_peer_type_proxy_v2_meta)
             }
             if (turnPeerTypeSpinner.text.toString() != peerTypeText) {
                 turnPeerTypeSpinner.setText(peerTypeText, false)
+            }
+        }
+    }
+
+    private fun updateTurnVkCredentialsProfileSpinner() {
+        binding?.apply {
+            val currentProfile = config?.turn?.vkCredentialsProfile ?: "web_app"
+            val profileText = when (currentProfile) {
+                "mvk_app" -> getString(R.string.turn_vk_credentials_profile_mvk_app)
+                "web_video_app" -> getString(R.string.turn_vk_credentials_profile_web_video_app)
+                "mvk_video_app" -> getString(R.string.turn_vk_credentials_profile_mvk_video_app)
+                "vk_id_auth_app" -> getString(R.string.turn_vk_credentials_profile_vk_id_auth_app)
+                else -> getString(R.string.turn_vk_credentials_profile_web_app)
+            }
+            if (turnVkCredentialsProfileSpinner.text.toString() != profileText) {
+                turnVkCredentialsProfileSpinner.setText(profileText, false)
             }
         }
     }
@@ -127,13 +144,19 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
             )
             turnModeSpinner.setAdapter(turnModeAdapter)
 
-            // Setup TURN peer type dropdown
             val turnPeerTypeAdapter = ArrayAdapter.createFromResource(
                 requireContext(),
                 R.array.turn_peer_type_options,
                 android.R.layout.simple_dropdown_item_1line
             )
             turnPeerTypeSpinner.setAdapter(turnPeerTypeAdapter)
+
+            val turnVkCredsAdapter = ArrayAdapter.createFromResource(
+                requireContext(),
+                R.array.turn_vk_credentials_profile_options,
+                android.R.layout.simple_dropdown_item_1line
+            )
+            turnVkCredentialsProfileSpinner.setAdapter(turnVkCredsAdapter)
 
             val currentMode = config?.turn?.mode ?: "vk_link"
             val modeIndex = when (currentMode) {
@@ -154,10 +177,11 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
                 config?.turn?.mode = if (position == 1) "wb" else "vk_link"
             }
 
-            val currentPeerType = config?.turn?.peerType ?: "proxy_v2"
+            val currentPeerType = config?.turn?.peerType ?: "proxy_v2_meta"
             val peerTypeIndex = when (currentPeerType) {
-                "proxy_v1" -> 1
-                "wireguard" -> 2
+                "proxy_v2" -> 1
+                "proxy_v1" -> 2
+                "wireguard" -> 3
                 else -> 0
             }
             if (turnPeerTypeSpinner.text.isNotEmpty()) {
@@ -172,9 +196,38 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
 
             turnPeerTypeSpinner.setOnItemClickListener { _, _, position, _ ->
                 config?.turn?.peerType = when (position) {
-                    1 -> "proxy_v1"
-                    2 -> "wireguard"
-                    else -> "proxy_v2"
+                    1 -> "proxy_v2"
+                    2 -> "proxy_v1"
+                    3 -> "wireguard"
+                    else -> "proxy_v2_meta"
+                }
+            }
+
+            val currentProfile = config?.turn?.vkCredentialsProfile ?: "web_app"
+            val profileIndex = when (currentProfile) {
+                "mvk_app" -> 1
+                "web_video_app" -> 2
+                "mvk_video_app" -> 3
+                "vk_id_auth_app" -> 4
+                else -> 0
+            }
+            if (turnVkCredentialsProfileSpinner.text.isNotEmpty()) {
+                val currentText = turnVkCredentialsProfileSpinner.text.toString()
+                val existingIndex = turnVkCredsAdapter.getPosition(currentText)
+                if (existingIndex != profileIndex) {
+                    turnVkCredentialsProfileSpinner.setText(turnVkCredsAdapter.getItem(profileIndex) ?: "", false)
+                }
+            } else {
+                turnVkCredentialsProfileSpinner.setText(turnVkCredsAdapter.getItem(profileIndex) ?: "", false)
+            }
+
+            turnVkCredentialsProfileSpinner.setOnItemClickListener { _, _, position, _ ->
+                config?.turn?.vkCredentialsProfile = when (position) {
+                    1 -> "mvk_app"
+                    2 -> "web_video_app"
+                    3 -> "mvk_video_app"
+                    4 -> "vk_id_auth_app"
+                    else -> "web_app"
                 }
             }
         }
@@ -207,6 +260,8 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
     override fun onMenuItemSelected(menuItem: MenuItem): Boolean {
         if (menuItem.itemId == R.id.menu_action_save) {
             binding ?: return false
+            val currentTunnel = tunnel
+            val currentActivity = requireActivity()
             val (newConfig, newTurnSettings) = try {
                 val configProxy = binding!!.config!!
                 val wgConfig = configProxy.resolve()
@@ -224,8 +279,23 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
                 Snackbar.make(binding!!.mainContainer, error, Snackbar.LENGTH_LONG).show()
                 return false
             }
-            val activity = requireActivity()
-            activity.lifecycleScope.launch {
+            val tunnelName = binding!!.name
+            if (currentTunnel != null && currentTunnel.name == tunnelName) {
+                onFinished()
+                currentActivity.lifecycleScope.launch {
+                    try {
+                        Application.getTunnelManager().setTunnelConfig(currentTunnel, newConfig, newTurnSettings)
+                    } catch (e: Throwable) {
+                        val error = ErrorMessages[e]
+                        val message = getString(R.string.config_save_error, currentTunnel.name, error)
+                        Log.e(TAG, message, e)
+                        Toast.makeText(currentActivity, message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                return true
+            }
+
+            currentActivity.lifecycleScope.launch {
                 when {
                     tunnel == null -> {
                         Log.d(TAG, "Attempting to create new tunnel " + binding!!.name)
@@ -240,24 +310,24 @@ class TunnelEditorFragment : BaseFragment(), MenuProvider {
                         }
                     }
 
-                    tunnel!!.name != binding!!.name -> {
+                    currentTunnel!!.name != binding!!.name -> {
                         Log.d(TAG, "Attempting to rename tunnel to " + binding!!.name)
                         try {
-                            tunnel!!.setNameAsync(binding!!.name!!)
-                            onTunnelRenamed(tunnel!!, newConfig, null)
-                            Application.getTunnelManager().setTunnelConfig(tunnel!!, newConfig, newTurnSettings)
+                            currentTunnel.setNameAsync(binding!!.name!!)
+                            onTunnelRenamed(currentTunnel, newConfig, null)
+                            Application.getTunnelManager().setTunnelConfig(currentTunnel, newConfig, newTurnSettings)
                         } catch (e: Throwable) {
-                            onTunnelRenamed(tunnel!!, newConfig, e)
+                            onTunnelRenamed(currentTunnel, newConfig, e)
                         }
                     }
 
                     else -> {
-                        Log.d(TAG, "Attempting to save config of " + tunnel!!.name)
+                        Log.d(TAG, "Attempting to save config of " + currentTunnel.name)
                         try {
-                            Application.getTunnelManager().setTunnelConfig(tunnel!!, newConfig, newTurnSettings)
-                            onConfigSaved(tunnel!!, null)
+                            Application.getTunnelManager().setTunnelConfig(currentTunnel, newConfig, newTurnSettings)
+                            onConfigSaved(currentTunnel, null)
                         } catch (e: Throwable) {
-                            onConfigSaved(tunnel!!, e)
+                            onConfigSaved(currentTunnel, e)
                         }
                     }
                 }

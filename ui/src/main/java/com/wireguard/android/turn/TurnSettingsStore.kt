@@ -30,11 +30,6 @@ class TurnSettingsStore(private val context: Context) {
             FileInputStream(file).use { stream ->
                 val bytes = stream.readBytes()
                 val json = JSONObject(String(bytes, StandardCharsets.UTF_8))
-
-                // Backward compatibility: derive peerType from legacy noDtls
-                val noDtlsLegacy = json.optBoolean("noDtls", false)
-                val peerTypeDefault = if (noDtlsLegacy) "wireguard" else "proxy_v2"
-
                 val settings = TurnSettings(
                     enabled = json.optBoolean("enabled", false),
                     peer = json.optString("peer", ""),
@@ -45,8 +40,17 @@ class TurnSettingsStore(private val context: Context) {
                     localPort = json.optInt("localPort", 9000),
                     turnIp = json.optString("turnIp", ""),
                     turnPort = json.optInt("turnPort", 0),
-                    peerType = json.optString("peerType", peerTypeDefault),
+                    peerType = json.optString(
+                        "peerType",
+                        if (json.optBoolean("noDtls", false)) "wireguard" else "proxy_v2_meta"
+                    ),
                     streamsPerCred = json.optInt("streamsPerCred", 4),
+                    watchdogTimeout = json.optInt("watchdogTimeout", 0),
+                    autoSwitchTurn = json.optBoolean("autoSwitchTurn", true),
+                    vkCredentialsProfile = json.optString("vkCredentialsProfile", "web_app"),
+                    streamStartDelayMs = json.optInt("streamStartDelayMs", 200),
+                    startupTimeoutSec = json.optInt("startupTimeoutSec", 75),
+                    quotaBackoffSec = json.optInt("quotaBackoffSec", 15),
                 )
                 settings
             }
@@ -77,6 +81,12 @@ class TurnSettingsStore(private val context: Context) {
             .put("turnPort", settings.turnPort)
             .put("peerType", settings.peerType)
             .put("streamsPerCred", settings.streamsPerCred)
+            .put("watchdogTimeout", settings.watchdogTimeout)
+            .put("autoSwitchTurn", settings.autoSwitchTurn)
+            .put("vkCredentialsProfile", settings.vkCredentialsProfile)
+            .put("streamStartDelayMs", settings.streamStartDelayMs)
+            .put("startupTimeoutSec", settings.startupTimeoutSec)
+            .put("quotaBackoffSec", settings.quotaBackoffSec)
 
         file.parentFile?.mkdirs()
         FileOutputStream(file, false).use { stream ->
@@ -107,4 +117,3 @@ class TurnSettingsStore(private val context: Context) {
         private const val TAG = "WireGuard/TurnSettingsStore"
     }
 }
-

@@ -63,6 +63,13 @@ class ObservableTunnel internal constructor(
     }
 
     suspend fun setStateAsync(state: Tunnel.State): Tunnel.State = withContext(Dispatchers.Main.immediate) {
+        if (state == Tunnel.State.DOWN || state == Tunnel.State.TOGGLE) {
+            val trace = Throwable().stackTrace
+                .drop(1)
+                .take(20)
+                .joinToString(" <- ") { "${it.className}.${it.methodName}:${it.lineNumber}" }
+            Log.w(TAG, "ObservableTunnel.setStateAsync request for $name: requested=$state current=${this@ObservableTunnel.state} via $trace")
+        }
         if (state != this@ObservableTunnel.state)
             manager.setTunnelState(this@ObservableTunnel, state)
         else

@@ -22,9 +22,7 @@ import com.wireguard.android.R
 import com.wireguard.android.backend.WgQuickBackend
 import com.wireguard.android.preference.PreferencesPreferenceDataStore
 import com.wireguard.android.util.AdminKnobs
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Interface for changing application-global persistent settings.
@@ -96,15 +94,7 @@ class SettingsActivity : AppCompatActivity() {
             }
             val kernelModuleEnabler = preferenceManager.findPreference<Preference>("kernel_module_enabler")
             if (WgQuickBackend.hasKernelSupport()) {
-                lifecycleScope.launch {
-                    if (Application.getBackend() !is WgQuickBackend) {
-                        try {
-                            withContext(Dispatchers.IO) { Application.getRootShell().start() }
-                        } catch (_: Throwable) {
-                            kernelModuleEnabler?.parent?.removePreference(kernelModuleEnabler)
-                        }
-                    }
-                }
+                kernelModuleEnabler?.isVisible = true
             } else {
                 kernelModuleEnabler?.parent?.removePreference(kernelModuleEnabler)
             }
