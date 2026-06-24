@@ -31,7 +31,7 @@ class VersionPreference(context: Context, attrs: AttributeSet?) : Preference(con
 
     override fun onClick() {
         val intent = Intent(Intent.ACTION_VIEW)
-        intent.data = Uri.parse("https://github.com/kiper292/wireguard-turn-android")
+        intent.data = Uri.parse("https://github.com/Yasich217/wireguard-turn-android")
         try {
             context.startActivity(intent)
         } catch (e: Throwable) {
@@ -50,14 +50,23 @@ class VersionPreference(context: Context, attrs: AttributeSet?) : Preference(con
     init {
         lifecycleScope.launch {
             val backend = Application.getBackend()
-            versionSummary = getContext().getString(R.string.version_summary_checking, getBackendPrettyName(context, backend).lowercase())
+            versionSummary = withUpdateChannel(
+                getContext().getString(R.string.version_summary_checking, getBackendPrettyName(context, backend).lowercase()),
+            )
             notifyChanged()
             versionSummary = try {
-                getContext().getString(R.string.version_summary, getBackendPrettyName(context, backend), withContext(Dispatchers.IO) { backend.version })
+                withUpdateChannel(
+                    getContext().getString(R.string.version_summary, getBackendPrettyName(context, backend), withContext(Dispatchers.IO) { backend.version }),
+                )
             } catch (_: Throwable) {
-                getContext().getString(R.string.version_summary_unknown, getBackendPrettyName(context, backend).lowercase())
+                withUpdateChannel(
+                    getContext().getString(R.string.version_summary_unknown, getBackendPrettyName(context, backend).lowercase()),
+                )
             }
             notifyChanged()
         }
     }
+
+    private fun withUpdateChannel(backendSummary: String): String =
+        backendSummary + "\n" + context.getString(R.string.update_channel_summary, BuildConfig.UPDATE_CHANNEL)
 }

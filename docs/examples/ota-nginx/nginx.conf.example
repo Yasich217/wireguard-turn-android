@@ -1,0 +1,34 @@
+events {}
+
+http {
+  server {
+    listen 443 ssl;
+    server_name ota.example.com;
+
+    ssl_certificate     /etc/nginx/certs/ota.example.com.fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/ota.example.com.key;
+    ssl_trusted_certificate /etc/nginx/certs/ca-chain.pem;
+
+    add_header Cache-Control "no-store";
+
+    location = /wg-turn/debug/latest.apk {
+      alias /srv/ota/debug/latest.apk;
+      default_type application/vnd.android.package-archive;
+    }
+
+    location = /wg-turn/release/latest.apk {
+      alias /srv/ota/release/latest.apk;
+      default_type application/vnd.android.package-archive;
+    }
+
+    location = /wg-turn/debug/latest.json {
+      alias /srv/ota/debug/latest.json;
+      default_type application/json;
+    }
+
+    location = /wg-turn/release/latest.json {
+      alias /srv/ota/release/latest.json;
+      default_type application/json;
+    }
+  }
+}

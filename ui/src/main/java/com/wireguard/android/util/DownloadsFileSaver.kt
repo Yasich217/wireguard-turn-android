@@ -37,14 +37,22 @@ class DownloadsFileSaver(private val context: ComponentActivity) {
         }
     }
 
-    suspend fun save(name: String, mimeType: String?, overwriteExisting: Boolean) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    suspend fun save(name: String, mimeType: String?, overwriteExisting: Boolean, relativePath: String? = null) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         withContext(Dispatchers.IO) {
             val contentResolver = context.contentResolver
-            if (overwriteExisting)
-                contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, String.format("%s = ?", MediaColumns.DISPLAY_NAME), arrayOf(name))
+            if (overwriteExisting) {
+                val (selection, args) = if (relativePath.isNullOrBlank()) {
+                    String.format("%s = ?", MediaColumns.DISPLAY_NAME) to arrayOf(name)
+                } else {
+                    String.format("%s = ? AND %s = ?", MediaColumns.DISPLAY_NAME, MediaColumns.RELATIVE_PATH) to arrayOf(name, normalizedRelativePath(relativePath))
+                }
+                contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, selection, args)
+            }
             val contentValues = ContentValues()
             contentValues.put(MediaColumns.DISPLAY_NAME, name)
             contentValues.put(MediaColumns.MIME_TYPE, mimeType)
+            if (!relativePath.isNullOrBlank())
+                contentValues.put(MediaColumns.RELATIVE_PATH, normalizedRelativePath(relativePath))
             val contentUri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
                 ?: throw IOException(context.getString(R.string.create_downloads_file_error))
             val contentStream = contentResolver.openOutputStream(contentUri)
@@ -85,12 +93,19 @@ class DownloadsFileSaver(private val context: ComponentActivity) {
             }
             @Suppress("DEPRECATION") val path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             withContext(Dispatchers.IO) {
-                val file = File(path, name)
-                if (!path.isDirectory && !path.mkdirs())
+                val dir = if (relativePath.isNullOrBlank()) path else File(path, relativePath.trim('/'))
+                val file = File(dir, name)
+                if (!dir.isDirectory && !dir.mkdirs())
                     throw IOException(context.getString(R.string.create_output_dir_error))
                 DownloadsFile(context, FileOutputStream(file), file.absolutePath, null)
             }
         }
+    }
+
+    private fun normalizedRelativePath(relativePath: String): String {
+        val trimmed = relativePath.trim('/').trim()
+        val path = if (trimmed.startsWith(Environment.DIRECTORY_DOWNLOADS)) trimmed else "${Environment.DIRECTORY_DOWNLOADS}/$trimmed"
+        return path + "/"
     }
 
     class DownloadsFile(private val context: Context, val outputStream: OutputStream, val fileName: String, private val uri: Uri?) {

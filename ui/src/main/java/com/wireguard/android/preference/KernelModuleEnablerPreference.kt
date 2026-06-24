@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.AttributeSet
 import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.Preference
 import com.wireguard.android.Application
@@ -43,6 +44,14 @@ class KernelModuleEnablerPreference(context: Context, attrs: AttributeSet?) : Pr
     override fun onClick() {
         activity.lifecycleScope.launch {
             if (state == State.DISABLED) {
+                try {
+                    withContext(Dispatchers.IO) { Application.getRootShell().start() }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Root request failed while enabling kernel backend", e)
+                    setState(State.DISABLED)
+                    Toast.makeText(context, context.getString(R.string.error_root), Toast.LENGTH_LONG).show()
+                    return@launch
+                }
                 setState(State.ENABLING)
                 UserKnobs.setEnableKernelModule(true)
             } else if (state == State.ENABLED) {

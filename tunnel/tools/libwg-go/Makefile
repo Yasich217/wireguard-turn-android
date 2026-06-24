@@ -22,7 +22,9 @@ export CGO_ENABLED := 1
 
 default: $(DESTDIR)/libwg-go.so
 
-$(DESTDIR)/libwg-go.so: go.mod
+SOURCES := $(wildcard *.go *.c)
+
+$(DESTDIR)/libwg-go.so: $(SOURCES) go.mod go.sum
 	go build -tags linux -ldflags="-checklinkname=0 -X golang.zx2c4.com/wireguard/ipc.socketDirectory=/data/data/$(ANDROID_PACKAGE_NAME)/cache/wireguard -buildid=" -v -trimpath -buildvcs=false -o "$@" -buildmode c-shared
 
 .DELETE_ON_ERROR:

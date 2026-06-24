@@ -1,0 +1,47 @@
+FROM archlinux:base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_NDK_HOME=/opt/android-sdk/ndk/29.0.13113456
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ENV PATH=/usr/lib/jvm/java-17-openjdk/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH
+
+RUN pacman -Sy --noconfirm archlinux-keyring && \
+    pacman -S --noconfirm --needed \
+      bash \
+      ca-certificates \
+      curl \
+      git \
+      go \
+      gcc \
+      glibc \
+      jdk17-openjdk \
+      lib32-glibc \
+      lib32-gcc-libs \
+      gcc-libs \
+      ncurses \
+      unzip \
+      wget \
+      zip && \
+    rm -rf /var/cache/pacman/pkg/*
+
+RUN mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools
+RUN wget -q https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -O /tmp/cmdline-tools.zip && \
+    unzip -q /tmp/cmdline-tools.zip -d /tmp && \
+    mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools/latest && \
+    mv /tmp/cmdline-tools/* ${ANDROID_SDK_ROOT}/cmdline-tools/latest/ && \
+    rm -rf /tmp/cmdline-tools /tmp/cmdline-tools.zip
+
+RUN mkdir -p /root/.android && touch /root/.android/repositories.cfg
+RUN yes | sdkmanager --sdk_root=${ANDROID_SDK_ROOT} --licenses >/dev/null
+RUN sdkmanager --sdk_root=${ANDROID_SDK_ROOT} \
+      "platform-tools" \
+      "cmake;3.22.1" \
+      "build-tools;35.0.0" \
+      "platforms;android-36" \
+      "build-tools;36.0.0" \
+      "ndk;29.0.13113456"
+
+WORKDIR /workspace
+CMD ["bash"]

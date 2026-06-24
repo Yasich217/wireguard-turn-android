@@ -452,15 +452,7 @@ object Updater {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED)
                 return
-
-            if (installer(context) != context.packageName)
-                return
-
-            /* TODO: does not work because of restrictions placed on broadcast receivers. */
-            val start = Intent(context, MainActivity::class.java)
-            start.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            start.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(start)
+            OtaUpdater.onPackageReplaced(context)
         }
     }
 }

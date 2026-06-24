@@ -5,10 +5,15 @@
 package com.wireguard.android.activity
 
 import android.content.Intent
+import android.Manifest
+import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
 import androidx.appcompat.app.ActionBar
@@ -19,6 +24,8 @@ import com.wireguard.android.R
 import com.wireguard.android.fragment.TunnelDetailFragment
 import com.wireguard.android.fragment.TunnelEditorFragment
 import com.wireguard.android.model.ObservableTunnel
+import com.wireguard.android.turn.CaptchaCoordinator
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 /**
  * CRUD interface for WireGuard tunnels. This activity serves as the main entry point to the
@@ -29,6 +36,8 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
     private var actionBar: ActionBar? = null
     private var isTwoPaneLayout = false
     private var backPressedCallback: OnBackPressedCallback? = null
+    private var backgroundAccessPromptShown = false
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     private fun handleBackPressed() {
         val backStackEntries = supportFragmentManager.backStackEntryCount
@@ -58,11 +67,43 @@ class MainActivity : BaseActivity(), FragmentManager.OnBackStackChangedListener 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.main_activity)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
         actionBar = supportActionBar
         isTwoPaneLayout = findViewById<View?>(R.id.master_detail_wrapper) != null
         supportFragmentManager.addOnBackStackChangedListener(this)
         backPressedCallback = onBackPressedDispatcher.addCallback(this) { handleBackPressed() }
         onBackStackChanged()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        CaptchaCoordinator.maybeOpenNextIfForeground()
+        maybePromptForBackgroundAccess()
+    }
+
+    private fun maybePromptForBackgroundAccess() {
+        if (backgroundAccessPromptShown) return
+        val powerManager = getSystemService(PowerManager::class.java) ?: return
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) return
+        backgroundAccessPromptShown = true
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.background_access_title)
+            .setMessage(R.string.background_access_message)
+            .setPositiveButton(R.string.background_access_open_settings) { _, _ ->
+                val packageUri = Uri.parse("package:$packageName")
+                val requestIntent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri)
+                try {
+                    startActivity(requestIntent)
+                } catch (_: Throwable) {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }
+            .setNegativeButton(R.string.background_access_later, null)
+            .show()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {

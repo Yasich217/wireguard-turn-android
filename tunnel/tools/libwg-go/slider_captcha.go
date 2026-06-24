@@ -10,7 +10,6 @@ import (
 	"image/color"
 	_ "image/jpeg"
 	"io"
-	"log"
 	neturl "net/url"
 	"regexp"
 	"sort"
@@ -23,9 +22,11 @@ import (
 )
 
 const (
-	captchaDebugInfo      = "1d3e9babfd3a74f4588bf90cf5c30d3e8e89a0e2a4544da8de8bbf4d78a32f5c"
-	sliderCaptchaType     = "slider"
-	defaultSliderAttempts = 4
+	captchaDebugInfo          = "1d3e9babfd3a74f4588bf90cf5c30d3e8e89a0e2a4544da8de8bbf4d78a32f5c"
+	captchaConnectionRtt      = "[250,250,250,250,250,250,250,250,250,250]"
+	captchaConnectionDownlink = "[1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45]"
+	sliderCaptchaType         = "slider"
+	defaultSliderAttempts     = 4
 )
 
 type captchaNotRobotSession struct {
@@ -103,6 +104,16 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 	if err != nil {
 		return nil, err
 	}
+	applyBrowserProfileFhttp(req, profileWithSavedCaptcha(s.profile))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Origin", "https://api.vk.ru")
+	req.Header.Set("Referer", "https://api.vk.ru/")
+	req.Header.Set("Sec-Fetch-Site", "same-site")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-GPC", "1")
+	req.Header.Set("Priority", "u=1, i")
 
 	httpResp, err := s.client.Do(req)
 	if err != nil {
@@ -134,8 +145,18 @@ func (s *captchaNotRobotSession) requestSettings() (*captchaSettingsResponse, er
 
 func (s *captchaNotRobotSession) requestComponentDone() error {
 	values := s.baseValues()
-	values.Set("browser_fp", s.browserFp)
-	values.Set("device", buildCaptchaDeviceJSON(s.profile))
+	browserFp := s.browserFp
+	deviceJSON := buildCaptchaDeviceJSON(s.profile)
+	if saved := getSavedCaptchaProfile(); saved != nil {
+		if strings.TrimSpace(saved.BrowserFp) != "" {
+			browserFp = strings.TrimSpace(saved.BrowserFp)
+		}
+		if strings.TrimSpace(saved.DeviceJSON) != "" {
+			deviceJSON = strings.TrimSpace(saved.DeviceJSON)
+		}
+	}
+	values.Set("browser_fp", browserFp)
+	values.Set("device", deviceJSON)
 
 	resp, err := s.request("captchaNotRobot.componentDone", values)
 	if err != nil {
@@ -169,6 +190,21 @@ func (s *captchaNotRobotSession) requestSliderContent(sliderSettings string) (*s
 	return parseSliderCaptchaContentResponse(resp)
 }
 
+func (s *captchaNotRobotSession) requestSliderContentWithFallback(sliderSettings string) (*sliderCaptchaContent, error) {
+	if err := s.requestComponentDone(); err != nil {
+		return nil, fmt.Errorf("componentDone before getContent failed: %w", err)
+	}
+	content, err := s.requestSliderContent(sliderSettings)
+	if err == nil || sliderSettings == "" {
+		return content, err
+	}
+	turnLog("[STREAM %d] [Captcha] getContent with captcha_settings failed: %v; retrying without settings", s.streamID, err)
+	if doneErr := s.requestComponentDone(); doneErr != nil {
+		turnLog("[STREAM %d] [Captcha] Warning: componentDone before getContent fallback failed: %v", s.streamID, doneErr)
+	}
+	return s.requestSliderContent("")
+}
+
 func (s *captchaNotRobotSession) requestSliderCheck(activeSteps []int, candidateIndex int, candidateCount int) (*captchaCheckResult, error) {
 	answer, err := encodeSliderAnswer(activeSteps)
 	if err != nil {
@@ -185,9 +221,13 @@ func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*ca
 	values.Set("motion", "[]")
 	values.Set("cursor", cursor)
 	values.Set("taps", "[]")
-	values.Set("connectionRtt", "[]")
-	values.Set("connectionDownlink", "[]")
-	values.Set("browser_fp", s.browserFp)
+	values.Set("connectionRtt", captchaConnectionRtt)
+	values.Set("connectionDownlink", captchaConnectionDownlink)
+	browserFp := s.browserFp
+	if saved := getSavedCaptchaProfile(); saved != nil && strings.TrimSpace(saved.BrowserFp) != "" {
+		browserFp = strings.TrimSpace(saved.BrowserFp)
+	}
+	values.Set("browser_fp", browserFp)
 	values.Set("hash", s.hash)
 	values.Set("answer", answer)
 	values.Set("debug_info", captchaDebugInfo)
@@ -200,9 +240,9 @@ func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*ca
 }
 
 func (s *captchaNotRobotSession) requestEndSession() {
-	log.Printf("[STREAM %d] [Captcha] Step 4/4: endSession", s.streamID)
+	turnLog("[STREAM %d] [Captcha] Step 4/4: endSession", s.streamID)
 	if _, err := s.request("captchaNotRobot.endSession", s.baseValues()); err != nil {
-		log.Printf("[STREAM %d] [Captcha] Warning: endSession failed: %v", s.streamID, err)
+		turnLog("[STREAM %d] [Captcha] Warning: endSession failed: %v", s.streamID, err)
 	}
 }
 
@@ -217,7 +257,7 @@ func callCaptchaNotRobotWithSliderPOC(
 ) (string, error) {
 	session := newCaptchaNotRobotSession(ctx, sessionToken, hash, streamID, client, profile)
 
-	log.Printf("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
+	turnLog("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
 	settingsResp, err := session.requestSettings()
 	if err != nil {
 		return "", err
@@ -226,64 +266,38 @@ func callCaptchaNotRobotWithSliderPOC(
 
 	time.Sleep(200 * time.Millisecond)
 
-	log.Printf("[STREAM %d] [Captcha] Step 2/4: componentDone", streamID)
+	turnLog("[STREAM %d] [Captcha] Step 2/4: componentDone", streamID)
 	if err := session.requestComponentDone(); err != nil {
 		return "", err
 	}
 
 	time.Sleep(200 * time.Millisecond)
 
-	log.Printf("[STREAM %d] [Captcha] Step 3/4: check", streamID)
-	initialCheck, err := session.requestCheckboxCheck()
-	if err != nil {
-		return "", err
-	}
-	if initialCheck.Status == "OK" {
-		if initialCheck.SuccessToken == "" {
-			return "", fmt.Errorf("success_token not found")
-		}
-		session.requestEndSession()
-		return initialCheck.SuccessToken, nil
-	}
-
 	sliderSettings, hasSlider := settingsResp.SettingsByType[sliderCaptchaType]
-	log.Printf(
-		"[STREAM %d] [Captcha] Checkbox-style check returned status=%s (settings show_type=%q, check show_type=%q, available_types=%s)",
+	turnLog(
+		"[STREAM %d] [Captcha] Slider settings: show_type=%q available_types=%s",
 		streamID,
-		initialCheck.Status,
 		settingsResp.ShowCaptchaType,
-		initialCheck.ShowCaptchaType,
 		describeCaptchaTypes(settingsResp.SettingsByType),
 	)
 
 	if !hasSlider {
-		log.Printf(
+		turnLog(
 			"[STREAM %d] [Captcha] Slider settings not found in settings response. Trying getContent without captcha_settings...",
 			streamID,
 		)
 	} else {
-		log.Printf("[STREAM %d] [Captcha] Trying experimental slider solver...", streamID)
+		turnLog("[STREAM %d] [Captcha] Trying experimental slider solver...", streamID)
 	}
 
-	sliderContent, err := session.requestSliderContent(sliderSettings)
+	sliderContent, err := session.requestSliderContentWithFallback(sliderSettings)
 	if err != nil {
-		log.Printf(
+		turnLog(
 			"[STREAM %d] [Captcha] Slider getContent failed (status: %v). Trying to solve as a checkbox instead...",
 			streamID,
 			err,
 		)
-		// Fallback: maybe it's just a checkbox that needs a human-like check
-		time.Sleep(300 * time.Millisecond)
-		finalCheck, err2 := session.requestCheckboxCheck()
-		if err2 == nil && finalCheck.Status == "OK" {
-			if finalCheck.SuccessToken == "" {
-				return "", fmt.Errorf("success_token not found in fallback check")
-			}
-			log.Printf("[STREAM %d] [Captcha] Fallback checkbox check succeeded!", streamID)
-			session.requestEndSession()
-			return finalCheck.SuccessToken, nil
-		}
-		return "", fmt.Errorf("check status: %s (slider getContent failed: %w)", initialCheck.Status, err)
+		return "", fmt.Errorf("slider getContent failed: %w", err)
 	}
 
 	candidates, err := rankSliderCandidates(sliderContent.Image, sliderContent.Size, sliderContent.Steps)
@@ -291,7 +305,7 @@ func callCaptchaNotRobotWithSliderPOC(
 		return "", err
 	}
 
-	log.Printf(
+	turnLog(
 		"[STREAM %d] [Captcha] Ranked %d slider positions locally; submitting top %d based on attempt budget %d",
 		streamID,
 		len(candidates),
@@ -300,7 +314,7 @@ func callCaptchaNotRobotWithSliderPOC(
 	)
 
 	successToken, err := trySliderCaptchaCandidates(candidates, sliderContent.Attempts, func(candidate sliderCandidate) (*captchaCheckResult, error) {
-		log.Printf(
+		turnLog(
 			"[STREAM %d] [Captcha] Slider guess position=%d score=%d",
 			streamID,
 			candidate.Index,
@@ -731,12 +745,15 @@ func rankSliderCandidates(img image.Image, gridSize int, swaps []int) ([]sliderC
 }
 
 func scoreSliderCandidate(img image.Image, gridSize int, mapping []int) (int64, error) {
-	rendered, err := renderSliderCandidate(img, gridSize, mapping)
-	if err != nil {
-		return 0, err
+	if gridSize <= 0 {
+		return 0, fmt.Errorf("invalid grid size: %d", gridSize)
+	}
+	tileCount := gridSize * gridSize
+	if len(mapping) != tileCount {
+		return 0, fmt.Errorf("unexpected tile mapping length: %d", len(mapping))
 	}
 
-	return scoreRenderedSliderImage(rendered, gridSize), nil
+	return scoreMappedSliderImage(img, gridSize, mapping), nil
 }
 
 func renderSliderCandidate(img image.Image, gridSize int, mapping []int) (*image.RGBA, error) {
@@ -758,6 +775,61 @@ func renderSliderCandidate(img image.Image, gridSize int, mapping []int) (*image
 	}
 
 	return rendered, nil
+}
+
+func scoreMappedSliderImage(img image.Image, gridSize int, mapping []int) int64 {
+	bounds := img.Bounds()
+	var score int64
+
+	for row := 0; row < gridSize; row++ {
+		for col := 0; col < gridSize-1; col++ {
+			leftIndex := row*gridSize + col
+			rightIndex := leftIndex + 1
+			leftRect := sliderTileRect(bounds, gridSize, leftIndex)
+			rightRect := sliderTileRect(bounds, gridSize, rightIndex)
+			height := minInt(leftRect.Dy(), rightRect.Dy())
+			for offset := 0; offset < height; offset++ {
+				score += pixelDiff(
+					sliderMappedPixel(img, bounds, gridSize, mapping, leftIndex, leftRect.Dx()-1, offset),
+					sliderMappedPixel(img, bounds, gridSize, mapping, rightIndex, 0, offset),
+				)
+			}
+		}
+	}
+
+	for row := 0; row < gridSize-1; row++ {
+		for col := 0; col < gridSize; col++ {
+			topIndex := row*gridSize + col
+			bottomIndex := topIndex + gridSize
+			topRect := sliderTileRect(bounds, gridSize, topIndex)
+			bottomRect := sliderTileRect(bounds, gridSize, bottomIndex)
+			width := minInt(topRect.Dx(), bottomRect.Dx())
+			for offset := 0; offset < width; offset++ {
+				score += pixelDiff(
+					sliderMappedPixel(img, bounds, gridSize, mapping, topIndex, offset, topRect.Dy()-1),
+					sliderMappedPixel(img, bounds, gridSize, mapping, bottomIndex, offset, 0),
+				)
+			}
+		}
+	}
+
+	return score
+}
+
+func sliderMappedPixel(img image.Image, bounds image.Rectangle, gridSize int, mapping []int, dstIndex int, xOffset int, yOffset int) color.Color {
+	dstRect := sliderTileRect(bounds, gridSize, dstIndex)
+	srcRect := sliderTileRect(bounds, gridSize, mapping[dstIndex])
+	if dstRect.Empty() || srcRect.Empty() {
+		return color.RGBA{}
+	}
+
+	xOffset = clampInt(xOffset, 0, dstRect.Dx()-1)
+	yOffset = clampInt(yOffset, 0, dstRect.Dy()-1)
+	x := srcRect.Min.X + xOffset*srcRect.Dx()/dstRect.Dx()
+	y := srcRect.Min.Y + yOffset*srcRect.Dy()/dstRect.Dy()
+	x = clampInt(x, srcRect.Min.X, srcRect.Max.X-1)
+	y = clampInt(y, srcRect.Min.Y, srcRect.Max.Y-1)
+	return img.At(x, y)
 }
 
 func scoreRenderedSliderImage(img image.Image, gridSize int) int64 {
@@ -918,6 +990,16 @@ func minInt(left int, right int) int {
 		return left
 	}
 	return right
+}
+
+func clampInt(value int, minValue int, maxValue int) int {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 func describeCaptchaTypes(settingsByType map[string]string) string {

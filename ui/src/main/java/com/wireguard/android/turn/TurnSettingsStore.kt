@@ -6,6 +6,7 @@ package com.wireguard.android.turn
 
 import android.content.Context
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -30,23 +31,79 @@ class TurnSettingsStore(private val context: Context) {
             FileInputStream(file).use { stream ->
                 val bytes = stream.readBytes()
                 val json = JSONObject(String(bytes, StandardCharsets.UTF_8))
-
-                // Backward compatibility: derive peerType from legacy noDtls
-                val noDtlsLegacy = json.optBoolean("noDtls", false)
-                val peerTypeDefault = if (noDtlsLegacy) "wireguard" else "proxy_v2"
-
+                val vkLinkOptions = when {
+                    json.has("vkCallHashes") -> {
+                        val array = json.optJSONArray("vkCallHashes")
+                        if (array != null) {
+                            val links = mutableListOf<String>()
+                            for (i in 0 until array.length()) {
+                                array.optString(i).trim().takeIf { it.isNotEmpty() }?.let(links::add)
+                            }
+                            TurnSettings.parseVkCallHashes(links.joinToString("\n"))
+                        } else {
+                            TurnSettings.parseVkCallHashes(json.optString("vkCallHashes", ""))
+                        }
+                    }
+                    json.has("vkLinkOptions") -> {
+                        val array = json.optJSONArray("vkLinkOptions")
+                        if (array != null) {
+                            val links = mutableListOf<String>()
+                            for (i in 0 until array.length()) {
+                                array.optString(i).trim().takeIf { it.isNotEmpty() }?.let(links::add)
+                            }
+                            TurnSettings.parseVkLinkOptions(links.joinToString("\n"))
+                        } else {
+                            TurnSettings.parseVkLinkOptions(json.optString("vkLinkOptions", ""))
+                        }
+                    }
+                    json.has("vkLinks") -> TurnSettings.parseVkLinkOptions(json.optString("vkLinks", ""))
+                    else -> TurnSettings.DEFAULT_VK_CALL_HASHES
+                }
+                val vkCredentialsProfiles = when {
+                    json.has("vkCredentialsProfiles") -> {
+                        val array = json.optJSONArray("vkCredentialsProfiles")
+                        if (array != null) {
+                            val profiles = mutableListOf<String>()
+                            for (i in 0 until array.length()) {
+                                array.optString(i).trim().takeIf { it.isNotEmpty() }?.let(profiles::add)
+                            }
+                            TurnSettings.parseVkCredentialProfiles(profiles.joinToString("\n"))
+                        } else {
+                            TurnSettings.parseVkCredentialProfiles(json.optString("vkCredentialsProfiles", ""))
+                        }
+                    }
+                    else -> TurnSettings.DEFAULT_VK_CREDENTIALS_PROFILES
+                }
                 val settings = TurnSettings(
                     enabled = json.optBoolean("enabled", false),
                     peer = json.optString("peer", ""),
-                    vkLink = json.optString("vkLink", ""),
+                    vkLink = json.optString("vkLink", vkLinkOptions.firstOrNull().orEmpty()),
+                    vkLinkOptions = vkLinkOptions,
                     mode = json.optString("mode", "vk_link"),
                     streams = json.optInt("streams", 4),
                     useUdp = json.optBoolean("useUdp", false),
                     localPort = json.optInt("localPort", 9000),
                     turnIp = json.optString("turnIp", ""),
                     turnPort = json.optInt("turnPort", 0),
-                    peerType = json.optString("peerType", peerTypeDefault),
+                    peerType = json.optString(
+                        "peerType",
+                        if (json.optBoolean("noDtls", false)) "wireguard" else "proxy_v2_meta"
+                    ),
                     streamsPerCred = json.optInt("streamsPerCred", 4),
+                    watchdogTimeout = json.optInt("watchdogTimeout", 0),
+                    autoSwitchTurn = json.optBoolean("autoSwitchTurn", true),
+                    vkCredentialsProfile = json.optString("vkCredentialsProfile", "web_app"),
+                    vkCredentialsProfiles = vkCredentialsProfiles,
+                    autoSwitchVkCredentials = json.optBoolean("autoSwitchVkCredentials", false),
+                    streamStartDelayMs = if (json.has("streamStartDelaySec")) {
+                        json.optInt("streamStartDelaySec", 1) * 1000
+                    } else {
+                        TurnSettings.delayMsFromLegacyMs(json.optInt("streamStartDelayMs", 1000))
+                    },
+                    startupTimeoutSec = json.optInt("startupTimeoutSec", 75),
+                    quotaBackoffSec = json.optInt("quotaBackoffSec", 15),
+                    captchaBackoffSec = json.optInt("captchaBackoffSec", 120),
+                    wrapKey = json.optString("wrapKey", ""),
                 )
                 settings
             }
@@ -69,6 +126,7 @@ class TurnSettingsStore(private val context: Context) {
             .put("enabled", settings.enabled)
             .put("peer", settings.peer)
             .put("vkLink", settings.vkLink)
+            .put("vkCallHashes", JSONArray(settings.vkLinkOptions))
             .put("mode", settings.mode)
             .put("streams", settings.streams)
             .put("useUdp", settings.useUdp)
@@ -77,6 +135,17 @@ class TurnSettingsStore(private val context: Context) {
             .put("turnPort", settings.turnPort)
             .put("peerType", settings.peerType)
             .put("streamsPerCred", settings.streamsPerCred)
+            .put("watchdogTimeout", settings.watchdogTimeout)
+            .put("autoSwitchTurn", settings.autoSwitchTurn)
+            .put("vkCredentialsProfile", settings.vkCredentialsProfile)
+            .put("vkCredentialsProfiles", JSONArray(settings.vkCredentialsProfiles))
+            .put("autoSwitchVkCredentials", settings.autoSwitchVkCredentials)
+            .put("streamStartDelaySec", TurnSettings.delaySecFromMs(settings.streamStartDelayMs))
+            .put("streamStartDelayMs", settings.streamStartDelayMs)
+            .put("startupTimeoutSec", settings.startupTimeoutSec)
+            .put("quotaBackoffSec", settings.quotaBackoffSec)
+            .put("captchaBackoffSec", settings.captchaBackoffSec)
+            .put("wrapKey", settings.wrapKey)
 
         file.parentFile?.mkdirs()
         FileOutputStream(file, false).use { stream ->
@@ -107,4 +176,3 @@ class TurnSettingsStore(private val context: Context) {
         private const val TAG = "WireGuard/TurnSettingsStore"
     }
 }
-

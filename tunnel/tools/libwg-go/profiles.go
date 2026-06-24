@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"math/rand"
+	"strings"
+	"sync"
 )
 
 type Profile struct {
@@ -9,6 +12,65 @@ type Profile struct {
 	SecChUa         string
 	SecChUaMobile   string
 	SecChUaPlatform string
+}
+
+type SavedProfile struct {
+	Profile    Profile
+	DeviceJSON string
+	BrowserFp  string
+}
+
+var savedCaptchaProfile struct {
+	sync.RWMutex
+	profile *SavedProfile
+}
+
+func setSavedCaptchaProfileJSON(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var profile SavedProfile
+	if err := json.Unmarshal([]byte(raw), &profile); err != nil {
+		return err
+	}
+	if strings.TrimSpace(profile.Profile.UserAgent) == "" {
+		return nil
+	}
+	savedCaptchaProfile.Lock()
+	savedCaptchaProfile.profile = &profile
+	savedCaptchaProfile.Unlock()
+	return nil
+}
+
+func getSavedCaptchaProfile() *SavedProfile {
+	savedCaptchaProfile.RLock()
+	defer savedCaptchaProfile.RUnlock()
+	if savedCaptchaProfile.profile == nil {
+		return nil
+	}
+	copied := *savedCaptchaProfile.profile
+	return &copied
+}
+
+func profileWithSavedCaptcha(base Profile) Profile {
+	saved := getSavedCaptchaProfile()
+	if saved == nil {
+		return base
+	}
+	if strings.TrimSpace(saved.Profile.UserAgent) != "" {
+		base.UserAgent = strings.TrimSpace(saved.Profile.UserAgent)
+	}
+	if strings.TrimSpace(saved.Profile.SecChUa) != "" {
+		base.SecChUa = strings.TrimSpace(saved.Profile.SecChUa)
+	}
+	if strings.TrimSpace(saved.Profile.SecChUaMobile) != "" {
+		base.SecChUaMobile = strings.TrimSpace(saved.Profile.SecChUaMobile)
+	}
+	if strings.TrimSpace(saved.Profile.SecChUaPlatform) != "" {
+		base.SecChUaPlatform = strings.TrimSpace(saved.Profile.SecChUaPlatform)
+	}
+	return base
 }
 
 // profiles contain paired User-Agent and Client Hints strings to harden bot detection.
