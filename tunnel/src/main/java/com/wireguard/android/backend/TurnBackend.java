@@ -774,4 +774,5 @@ public final class TurnBackend {
     public static native void wgNotifyNetworkChange();
     public static native String wgTurnProxyGetRuntimeStatusJson();
     public static native void wgTurnProxySetCaptchaProfile(String profileJson);
+    public static native void wgTurnProxyClearSessions();
 }

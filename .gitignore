@@ -19,5 +19,7 @@ build/
 *.jks
 signing.properties
 ui/src/main/res/raw/ota_root_ca.pem
+ui/src/main/res/raw/keep.xml
+/local-signing/
 gradlew.bat
 maint/

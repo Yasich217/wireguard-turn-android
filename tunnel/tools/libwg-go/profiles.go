@@ -43,6 +43,12 @@ func setSavedCaptchaProfileJSON(raw string) error {
 	return nil
 }
 
+func clearSavedCaptchaProfile() {
+	savedCaptchaProfile.Lock()
+	savedCaptchaProfile.profile = nil
+	savedCaptchaProfile.Unlock()
+}
+
 func getSavedCaptchaProfile() *SavedProfile {
 	savedCaptchaProfile.RLock()
 	defer savedCaptchaProfile.RUnlock()

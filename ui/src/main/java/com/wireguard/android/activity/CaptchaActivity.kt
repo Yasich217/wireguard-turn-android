@@ -13,9 +13,11 @@ import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.webkit.JavascriptInterface
 import android.webkit.ConsoleMessage
 import android.webkit.WebResourceError
@@ -24,11 +26,13 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.wireguard.android.BuildConfig
 import com.wireguard.android.turn.CaptchaCoordinator
+import com.wireguard.android.turn.CaptchaDebugTrace
 import com.wireguard.android.turn.SilentCaptchaSolver
 import com.wireguard.android.turn.VkCaptchaProfileStore
 import java.io.File
@@ -44,10 +48,11 @@ class CaptchaActivity : AppCompatActivity() {
     private var inspectionGeneration = 0
     private var requestLogCount = 0
     private var limitHandled = false
-    private val debugTraceFile by lazy { File(cacheDir, "captcha-debug.log") }
+    private var lastFinishedUrl = ""
+    private var lastFinishedElapsedMs = 0L
 
     private fun logWebView(message: String?) {
-        if (message.isNullOrBlank()) return
+        if (!BuildConfig.DEBUG || message.isNullOrBlank()) return
         val normalized = message
             .replace("\u0000", "")
             .replace("\r", "")
@@ -60,10 +65,7 @@ class CaptchaActivity : AppCompatActivity() {
         } else {
             normalized
         }
-        try {
-            debugTraceFile.appendText("${System.currentTimeMillis()} $safeMessage\n")
-        } catch (_: Throwable) {
-        }
+        CaptchaDebugTrace.append(this, "visible", safeMessage)
         Log.d(TAG, "WebView: $safeMessage")
     }
 
@@ -98,6 +100,9 @@ class CaptchaActivity : AppCompatActivity() {
             FileOutputStream(file).use { out ->
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
+            cacheDir.listFiles { candidate ->
+                candidate.name.startsWith("captcha-") && candidate.extension == "png"
+            }?.sortedByDescending(File::lastModified)?.drop(MAX_DEBUG_SCREENSHOTS)?.forEach(File::delete)
             logWebView("[screenshot:$reason] saved=${file.absolutePath} size=${width}x${height} url=${view.url}")
         } catch (e: Throwable) {
             logWebView("[screenshot:$reason:error] ${e.javaClass.simpleName}: ${e.message}")
@@ -115,7 +120,7 @@ class CaptchaActivity : AppCompatActivity() {
     }
 
     private fun inspectPage(view: WebView?, reason: String) {
-        if (view == null) return
+        if (!BuildConfig.DEBUG || view == null) return
         logWebView("[inspect:$reason] url=${view.url} title=${view.title}")
         view.evaluateJavascript(
             """
@@ -171,7 +176,7 @@ class CaptchaActivity : AppCompatActivity() {
     }
 
     private fun startInspectionLoop(view: WebView?, reason: String) {
-        if (view == null) return
+        if (!BuildConfig.DEBUG || view == null) return
         val generation = ++inspectionGeneration
         fun tick(step: Int) {
             if (generation != inspectionGeneration) return
@@ -213,6 +218,7 @@ class CaptchaActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback(this) { handleBack() }
         val createMessage = "onCreate intent=${intent?.action} cacheId=${intent.getIntExtra(EXTRA_CACHE_ID, -1)} redirectUri=${intent.getStringExtra(EXTRA_REDIRECT_URI).orEmpty()}"
         Log.d(TAG, createMessage)
         logWebView(createMessage)
@@ -231,8 +237,11 @@ class CaptchaActivity : AppCompatActivity() {
             settings.userAgentString = USER_AGENT
             logWebViewLong("[ua:forced]", settings.userAgentString)
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-                WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, true)
+                // VK supplies its own CAPTCHA palette. Algorithmic darkening turns parts of
+                // the slider/checkbox text dark-on-dark and also causes a black startup flash.
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, false)
             }
+            setBackgroundColor(Color.WHITE)
             addJavascriptInterface(CaptchaBridge(), "AndroidCaptcha")
             webChromeClient = object : WebChromeClient() {
                 override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
@@ -251,7 +260,6 @@ class CaptchaActivity : AppCompatActivity() {
                     super.onPageCommitVisible(view, url)
                     Log.d(TAG, "[pageCommitVisible] url=$url")
                     logWebView("[pageCommitVisible] url=${url.orEmpty().take(200)}")
-                    logWebViewLong("[pageCommitVisible:url]", url)
                     inspectPage(view, "commitVisible")
                     startInspectionLoop(view, "commitVisible")
                     view?.post { captureWebView(view, "commitVisible") }
@@ -261,7 +269,6 @@ class CaptchaActivity : AppCompatActivity() {
                     super.onPageStarted(view, url, favicon)
                     Log.d(TAG, "[pageStarted] url=$url")
                     logWebView("[pageStarted] url=${url.orEmpty().take(200)}")
-                    logWebViewLong("[pageStarted:url]", url)
                     inspectPage(view, "started")
                     startInspectionLoop(view, "started")
                     view?.post { captureWebView(view, "started") }
@@ -269,9 +276,14 @@ class CaptchaActivity : AppCompatActivity() {
 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
+                    val now = SystemClock.elapsedRealtime()
+                    if (url == lastFinishedUrl && now - lastFinishedElapsedMs < PAGE_FINISHED_DEBOUNCE_MS) {
+                        return
+                    }
+                    lastFinishedUrl = url.orEmpty()
+                    lastFinishedElapsedMs = now
                     Log.d(TAG, "[pageFinished] url=$url title=${view?.title}")
                     logWebView("[pageFinished] url=${url.orEmpty().take(200)} title=${view?.title}")
-                    logWebViewLong("[pageFinished:url]", url)
                     view?.evaluateJavascript(INTERCEPT_SCRIPT) { result ->
                         logWebView("[interceptScript] $result")
                     }
@@ -320,7 +332,6 @@ class CaptchaActivity : AppCompatActivity() {
                             "[request${if (isMainFrame) ":main" else "#$requestLogCount"}] " +
                                 "method=${request?.method} mainFrame=$isMainFrame url=${url.take(200)}",
                         )
-                        logWebViewLong("[request:url]", url)
                     }
                     return super.shouldInterceptRequest(view, request)
                 }
@@ -360,8 +371,7 @@ class CaptchaActivity : AppCompatActivity() {
         }
     }
 
-    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-    override fun onBackPressed() {
+    private fun handleBack() {
         val view = webView
         if (view != null && view.canGoBack()) {
             view.goBack()
@@ -453,7 +463,6 @@ class CaptchaActivity : AppCompatActivity() {
         val applyMessage = "applyIntent cacheId=$nextCacheId redirectUri=${nextRedirectUri.take(200)}"
         Log.d(TAG, applyMessage)
         logWebView(applyMessage)
-        logWebViewLong("[applyIntent:redirectUri]", nextRedirectUri)
         if (nextCacheId < 0 || nextRedirectUri.isBlank()) {
             Log.d(TAG, "Missing cacheId or redirectUri, closing captcha activity")
             if (cacheId >= 0) {
@@ -491,7 +500,6 @@ class CaptchaActivity : AppCompatActivity() {
 
         CaptchaCoordinator.markVisible(cacheId)
         logWebView("[loadUrl] cacheId=$cacheId redirectUri=${redirectUri.take(200)}")
-        logWebViewLong("[loadUrl:redirectUri]", redirectUri)
         webView?.loadUrl(redirectUri)
         webView?.postDelayed({
             logWebView("[loadUrl-post] cacheId=$cacheId url=${webView?.url} title=${webView?.title}")
@@ -582,8 +590,6 @@ class CaptchaActivity : AppCompatActivity() {
                         style.textContent = [
                             'body { -webkit-text-size-adjust: 100% !important; }',
                             'button, [role="button"], [class*="slider" i], [class*="slider" i] * {',
-                            '  color: #111 !important;',
-                            '  text-shadow: 0 1px 0 rgba(255,255,255,.85) !important;',
                             '  opacity: 1 !important;',
                             '}',
                             '[class*="slider" i] button, [class*="slider" i] [role="button"] {',
@@ -747,7 +753,18 @@ class CaptchaActivity : AppCompatActivity() {
         """.trimIndent()
 
         fun solveCaptcha(context: Context, cacheId: Int, redirectUri: String): String {
-            val silentResult = SilentCaptchaSolver.solve(context, cacheId, redirectUri)
+            var silentResult = SilentCaptchaSolver.solve(context, cacheId, redirectUri)
+            if (silentResult.reason == "timeout") {
+                // A fresh WebView regularly succeeds immediately after the first hidden page
+                // got stuck. Retry it off-screen before waking the user with a notification.
+                Log.d(TAG, "Retrying timed-out silent captcha cacheId=$cacheId before visible fallback")
+                silentResult = SilentCaptchaSolver.solve(
+                    context,
+                    cacheId,
+                    redirectUri,
+                    SILENT_RETRY_TIMEOUT_MS,
+                )
+            }
             if (silentResult.token.isNotBlank()) {
                 Log.d(TAG, "Silent captcha solved cacheId=$cacheId tokenLength=${silentResult.token.length}")
                 return silentResult.token
@@ -766,5 +783,8 @@ class CaptchaActivity : AppCompatActivity() {
 
         private const val CAPTCHA_LIMIT_SENTINEL = "__CAPTCHA_LIMIT_REACHED__"
         private const val CAPTCHA_WAIT_SENTINEL = "__CAPTCHA_WAIT_REQUIRED__"
+        private const val SILENT_RETRY_TIMEOUT_MS = 15_000L
+        private const val MAX_DEBUG_SCREENSHOTS = 12
+        private const val PAGE_FINISHED_DEBOUNCE_MS = 1500L
     }
 }

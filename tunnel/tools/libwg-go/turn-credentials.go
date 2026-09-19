@@ -94,8 +94,6 @@ var currentVKCredentialsProfile = defaultVKCredentialsProfile
 var autoSwitchVKCredentials bool
 var enabledVKCredentialsProfilesMu sync.RWMutex
 var enabledVKCredentialsProfiles = map[string]bool{}
-var vkCredentialsProfileWaitMu sync.Mutex
-var vkCredentialsProfileWaitUntil = map[string]int64{}
 var vkCredentialsProfileRetryMu sync.Mutex
 var vkCredentialsProfileRetryUntil = map[string]int64{}
 var vkCredentialsProfileUnsupportedMu sync.Mutex
@@ -252,7 +250,6 @@ func selectedVKCredentialsProfilesForLink(link string) []string {
 	for _, profile := range runtimeActiveVKCredentialsProfiles() {
 		profile = normalizeVKCredentialsProfile(profile)
 		if isVKCredentialsProfileEnabled(profile) &&
-			vkCredentialsProfileWaitRemaining(profile, link) == 0 &&
 			vkCredentialsProfileRetryRemaining(profile, link) == 0 {
 			add(profile)
 		}
@@ -459,9 +456,6 @@ func clearCaptchaLockouts() {
 	captchaLockoutMu.Lock()
 	defer captchaLockoutMu.Unlock()
 	captchaLockoutByCache = map[string]int64{}
-	vkCredentialsProfileWaitMu.Lock()
-	vkCredentialsProfileWaitUntil = map[string]int64{}
-	vkCredentialsProfileWaitMu.Unlock()
 	vkCredentialsProfileRetryMu.Lock()
 	vkCredentialsProfileRetryUntil = map[string]int64{}
 	vkCredentialsProfileRetryMu.Unlock()
@@ -483,32 +477,8 @@ func noteCaptchaWaitLockout(streamID int, profile string, link string, reason st
 	captchaLockoutMu.Lock()
 	captchaLockoutByCache[key] = until.Unix()
 	captchaLockoutMu.Unlock()
-	noteVKCredentialsProfileWait(profile, link, until)
-	turnLog("[STREAM %d] [Captcha] VK captcha wait detected for profile=%s link=%s cache=%d (%s); suppressing until %s", streamID, profile, link, cacheID, reason, until.Format(time.RFC3339))
+	turnLog("[STREAM %d] [Captcha] VK captcha wait detected for profile=%s link=%s cache=%d (%s); suppressing this credential cache until %s", streamID, profile, link, cacheID, reason, until.Format(time.RFC3339))
 	setRuntimeModeInfo(fmt.Sprintf("VK captcha cooldown: %s link %s cache %d for %s", profile, link, cacheID, time.Until(until).Round(time.Second)))
-}
-
-func noteVKCredentialsProfileWait(profile string, link string, until time.Time) {
-	key := vkProfileLinkKey(profile, link)
-	vkCredentialsProfileWaitMu.Lock()
-	vkCredentialsProfileWaitUntil[key] = until.Unix()
-	vkCredentialsProfileWaitMu.Unlock()
-}
-
-func vkCredentialsProfileWaitRemaining(profile string, link string) time.Duration {
-	key := vkProfileLinkKey(profile, link)
-	vkCredentialsProfileWaitMu.Lock()
-	defer vkCredentialsProfileWaitMu.Unlock()
-	until := vkCredentialsProfileWaitUntil[key]
-	if until <= 0 {
-		return 0
-	}
-	remaining := time.Until(time.Unix(until, 0))
-	if remaining <= 0 {
-		delete(vkCredentialsProfileWaitUntil, key)
-		return 0
-	}
-	return remaining
 }
 
 func noteVKCredentialsProfileRetryBackoff(profile string, link string, until time.Time) {
@@ -911,16 +881,6 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 				continue
 			}
 
-			if remaining := vkCredentialsProfileWaitRemaining(profile, candidateLink); remaining > 0 {
-				err := fmt.Errorf("CAPTCHA_WAIT_REQUIRED: VK credentials profile %s link %s cooldown active for %s", profile, candidateLink, remaining.Round(time.Second))
-				rememberErr(err, false)
-				if !autoSwitchVKCredentials {
-					return "", "", "", profile, candidateLink, err
-				}
-				turnLog("[STREAM %d] [VK Auth] Skipping profile=%s link=%s: %v", streamID, profile, candidateLink, err)
-				continue
-			}
-
 			if remaining := captchaLockoutRemaining(streamID, profile, candidateLink); remaining > 0 {
 				err := fmt.Errorf("CAPTCHA_WAIT_REQUIRED: captcha cache %d profile %s link %s lockout active for %s", getCacheID(streamID), profile, candidateLink, remaining.Round(time.Second))
 				rememberErr(err, false)
@@ -949,13 +909,8 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 				turnLog("[STREAM %d] [VK Auth] Failed with link=%s profile=%s client_id=%s: %v", streamID, candidateLink, profile, creds.ClientID, err)
 
 				if strings.Contains(err.Error(), "CAPTCHA_WAIT_REQUIRED") {
-					backoffSec := captchaBackoffSec
-					if backoffSec <= 0 {
-						backoffSec = 1
-					}
-					noteVKCredentialsProfileWait(profile, candidateLink, time.Now().Add(time.Duration(backoffSec)*time.Second))
 					if autoSwitchVKCredentials {
-						turnLog("[STREAM %d] [VK Auth] Profile=%s link=%s hit captcha wait; trying next profile/link", streamID, profile, candidateLink)
+						turnLog("[STREAM %d] [VK Auth] Profile=%s link=%s cache=%d hit captcha wait; trying next profile/link for this cache", streamID, profile, candidateLink, getCacheID(streamID))
 						break
 					}
 				}

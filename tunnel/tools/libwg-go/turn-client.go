@@ -129,6 +129,8 @@ var (
 	relayRxErrorCount  atomic.Uint64 // Errors in relay RX
 	noDtlsTxDropCount  atomic.Uint64 // Drops in NoDTLS TX
 	noDtlsRxErrorCount atomic.Uint64 // Errors in NoDTLS RX
+	proxyTxBytes       atomic.Uint64 // WireGuard backend -> TURN
+	proxyRxBytes       atomic.Uint64 // TURN -> WireGuard backend
 )
 
 type startupTracker struct {
@@ -276,6 +278,8 @@ type runtimeStatus struct {
 	VKCredentialsProfiles      []string       `json:"vk_credentials_profiles"`
 	VKCredentialsProfileErrors map[string]int `json:"vk_credentials_profile_errors,omitempty"`
 	LastSyncUnix               int64          `json:"last_sync_unix"`
+	ProxyTxBytes               uint64         `json:"proxy_tx_bytes"`
+	ProxyRxBytes               uint64         `json:"proxy_rx_bytes"`
 	ActiveStreams              int            `json:"active_streams"`
 	ErrorCount                 int            `json:"error_count"`
 	LastError                  string         `json:"last_error"`
@@ -292,6 +296,8 @@ func resetRuntimeState() {
 	defer runtimeState.mu.Unlock()
 	runtimeState.status = runtimeStatus{}
 	runtimeState.credentialProfiles = nil
+	proxyTxBytes.Store(0)
+	proxyRxBytes.Store(0)
 }
 
 func setRuntimeModeInfo(mode string) {
@@ -435,7 +441,10 @@ func containsString(items []string, candidate string) bool {
 func runtimeStatusJSON() string {
 	runtimeState.mu.RLock()
 	defer runtimeState.mu.RUnlock()
-	data, err := json.Marshal(runtimeState.status)
+	status := runtimeState.status
+	status.ProxyTxBytes = proxyTxBytes.Load()
+	status.ProxyRxBytes = proxyRxBytes.Load()
+	data, err := json.Marshal(status)
 	if err != nil {
 		return "{}"
 	}
@@ -452,6 +461,17 @@ func wgTurnProxySetCaptchaProfile(profileJSONC *C.char) {
 		return
 	}
 	turnLog("[Captcha] Saved browser profile loaded")
+}
+
+//export wgTurnProxyClearSessions
+func wgTurnProxyClearSessions() {
+	cancelCurrentTurn()
+	invalidateAllCaches()
+	clearCaptchaLockouts()
+	clearSavedCaptchaProfile()
+	ClearCache()
+	turnHTTPClient.CloseIdleConnections()
+	turnLog("[VK Auth] TURN credentials, captcha lockouts, and browser profile cleared")
 }
 
 func parseExternalIPResponse(body []byte) string {
@@ -986,12 +1006,14 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 					turnLog("[STREAM %d] RX: no peer address yet", s.id)
 					continue
 				}
-				if _, err := s.out.WriteTo(buf[:n], *addr); err != nil {
+				written, err := s.out.WriteTo(buf[:n], *addr)
+				if err != nil {
 					noDtlsRxErrorCount.Add(1)
 					turnLog("[STREAM %d] RX write error: %v", s.id, err)
 					reportErr(fmt.Errorf("NoDTLS RX write error: %w", err))
 					return
 				}
+				proxyRxBytes.Add(uint64(written))
 			}
 		}
 	}()
@@ -1308,12 +1330,14 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 			}
 			lastRx.Store(time.Now().Unix())
 			if last := s.peer.Load(); last != nil {
-				if _, err := s.out.WriteTo(buf[:n], *last); err != nil {
+				written, err := s.out.WriteTo(buf[:n], *last)
+				if err != nil {
 					dtlsRxErrorCount.Add(1)
 					turnLog("[STREAM %d] RX write error: %v", s.id, err)
 					reportErr(fmt.Errorf("DTLS RX write error: %w", err))
 					return
 				}
+				proxyRxBytes.Add(uint64(written))
 			}
 		}
 	}()
@@ -1551,6 +1575,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, vklinksC *C.char, mode
 				packetPool.Put(b[:cap(b)])
 				return
 			}
+			proxyTxBytes.Add(uint64(nRead))
 
 			// Round-Robin selection
 			lastUsed = (lastUsed + 1) % nStreams

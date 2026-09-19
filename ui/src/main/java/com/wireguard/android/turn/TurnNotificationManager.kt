@@ -10,6 +10,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.wireguard.android.R
@@ -73,7 +74,11 @@ object TurnNotificationManager {
             builder.setOnlyAlertOnce(false)
         }
 
-        NotificationManagerCompat.from(context).notify(CAPTCHA_NOTIFICATION_ID, builder.build())
+        try {
+            NotificationManagerCompat.from(context).notify(CAPTCHA_NOTIFICATION_ID, builder.build())
+        } catch (e: SecurityException) {
+            Log.w("WireGuard/TurnNotification", "Captcha notification permission denied", e)
+        }
     }
 
     fun showTurnFailureNotification(context: Context, tunnelName: String, details: String? = null) {
@@ -107,7 +112,11 @@ object TurnNotificationManager {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
             .build()
-        NotificationManagerCompat.from(context).notify(ERROR_NOTIFICATION_ID, notification)
+        try {
+            NotificationManagerCompat.from(context).notify(ERROR_NOTIFICATION_ID, notification)
+        } catch (e: SecurityException) {
+            Log.w("WireGuard/TurnNotification", "TURN notification permission denied", e)
+        }
     }
 
     fun clearCaptchaNotification(context: Context) {

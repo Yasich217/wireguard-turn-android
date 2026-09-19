@@ -4,6 +4,7 @@
  */
 package com.wireguard.android
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -60,6 +61,8 @@ class Application : android.app.Application() {
     override fun attachBaseContext(context: Context) {
         super.attachBaseContext(context)
         if (BuildConfig.MIN_SDK_VERSION > Build.VERSION.SDK_INT) {
+            // CATEGORY_HOME targets the launcher, not an app-internal activity.
+            @SuppressLint("UnsafeImplicitIntentLaunch")
             val intent = Intent(Intent.ACTION_MAIN)
             intent.addCategory(Intent.CATEGORY_HOME)
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
@@ -70,23 +73,23 @@ class Application : android.app.Application() {
     }
 
     private suspend fun determineBackend(): Backend {
-        var backend: Backend? = null
-        if (UserKnobs.enableKernelModule.first() && WgQuickBackend.hasKernelSupport()) {
-            try {
-                rootShell.start()
-                val wgQuickBackend = WgQuickBackend(applicationContext, rootShell, toolsInstaller)
-                wgQuickBackend.setMultipleTunnels(UserKnobs.multipleTunnels.first())
-                backend = wgQuickBackend
-                UserKnobs.multipleTunnels.onEach {
-                    wgQuickBackend.setMultipleTunnels(it)
-                }.launchIn(coroutineScope)
-            } catch (ignored: Exception) {
+        if (BuildConfig.DEBUG) {
+            check(WgQuickBackend.hasKernelSupport()) {
+                "Debug build requires the WireGuard kernel module"
             }
+            rootShell.start()
+            val backend = WgQuickBackend(applicationContext, rootShell, toolsInstaller)
+            backend.setMultipleTunnels(UserKnobs.multipleTunnels.first())
+            UserKnobs.multipleTunnels.onEach {
+                backend.setMultipleTunnels(it)
+            }.launchIn(coroutineScope)
+            Log.i(TAG, "Debug build: selected root/kernel WgQuickBackend")
+            return backend
         }
-        if (backend == null) {
-            backend = GoBackend(applicationContext)
-            GoBackend.setAlwaysOnCallback { get().applicationScope.launch { get().tunnelManager.restoreState(true) } }
-        }
+
+        Log.i(TAG, "Release build: selected userspace GoBackend")
+        val backend = GoBackend(applicationContext)
+        GoBackend.setAlwaysOnCallback { get().applicationScope.launch { get().tunnelManager.restoreState(true) } }
         return backend
     }
 
@@ -145,6 +148,7 @@ class Application : android.app.Application() {
                 futureBackend.complete(backend!!)
             } catch (e: Throwable) {
                 Log.e(TAG, Log.getStackTraceString(e))
+                futureBackend.completeExceptionally(e)
             }
         }
         // Updater.monitorForUpdates()  // Disabled for fork

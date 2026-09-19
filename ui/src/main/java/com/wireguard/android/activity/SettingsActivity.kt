@@ -92,12 +92,6 @@ class SettingsActivity : AppCompatActivity() {
                 startActivity(Intent(requireContext(), LogViewerActivity::class.java))
                 true
             }
-            val kernelModuleEnabler = preferenceManager.findPreference<Preference>("kernel_module_enabler")
-            if (WgQuickBackend.hasKernelSupport()) {
-                kernelModuleEnabler?.isVisible = true
-            } else {
-                kernelModuleEnabler?.parent?.removePreference(kernelModuleEnabler)
-            }
         }
     }
 }

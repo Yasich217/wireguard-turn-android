@@ -187,7 +187,7 @@
     <string name="qr_code_hint">نکته: با `qrencode -t ansiutf8 &lt; tunnel.conf` تولید کنید.</string>
     <string name="quick_settings_tile_add_title">افزودن ایکون برنامه به نوار اطلاع رسانی گوشی</string>
     <string name="quick_settings_tile_add_summary">ایکون برنامه در نوار اطلاع رسانی، جدید ترین تونل را فعال یا غیرفعال می‌کند</string>
-    <string name="quick_settings_tile_add_failure">خطا در اضافه کردن ایکون برنامه در نوار اطلاع رسانی</string>
+    <string name="quick_settings_tile_add_failure">خطا در اضافه کردن ایکون برنامه در نوار اطلاع رسانی: %d</string>
     <string name="quick_settings_tile_action">فعال یا غیرفعال کردن تونل</string>
     <string name="restore_on_boot_summary_off">تونل های فعال در لحظه بالا آمدن سیستم، روشن نخواهند شد</string>
     <string name="restore_on_boot_summary_on">تونل های فعال در لحظه بالا آمدن سیستم، روشن خواهند شد</string>

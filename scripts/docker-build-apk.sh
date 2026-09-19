@@ -5,6 +5,39 @@ VARIANT="${1:-both}"
 IMAGE_NAME="${IMAGE_NAME:-wgturn-android-builder:latest}"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FORCE_REBUILD="${FORCE_REBUILD:-0}"
+DOCKER_PROJECT_DIR="${DOCKER_PROJECT_DIR:-}"
+OTA_ENV_VARS=(
+  UPDATE_CHANNEL
+  OTA_RELEASE_META_URL
+  OTA_DEBUG_META_URL
+  OTA_PINNED_CA_ENABLED
+  OTA_PINNED_CA_RES
+  GITHUB_RELEASE_META_URL
+  GITHUB_DEBUG_META_URL
+  DONATIONS_URL
+)
+DOCKER_ENV_ARGS=()
+
+for var_name in "${OTA_ENV_VARS[@]}"; do
+  if [[ -v "$var_name" ]]; then
+    DOCKER_ENV_ARGS+=(--env "$var_name")
+  fi
+done
+
+if [[ -z "$DOCKER_PROJECT_DIR" ]]; then
+  DOCKER_PROJECT_DIR="$PROJECT_DIR"
+  if [[ -n "${HOSTNAME:-}" ]] && docker inspect "$HOSTNAME" >/dev/null 2>&1; then
+    best_container_path=""
+    while IFS=$'\t' read -r host_path container_path; do
+      if [[ "$PROJECT_DIR" == "$container_path" || "$PROJECT_DIR" == "$container_path/"* ]]; then
+        if (( ${#container_path} > ${#best_container_path} )); then
+          best_container_path="$container_path"
+          DOCKER_PROJECT_DIR="${host_path}${PROJECT_DIR#"$container_path"}"
+        fi
+      fi
+    done < <(docker inspect "$HOSTNAME" --format '{{range .Mounts}}{{printf "%s\t%s\n" .Source .Destination}}{{end}}')
+  fi
+fi
 
 case "$VARIANT" in
   debug)
@@ -47,7 +80,8 @@ docker run --rm \
   -e GRADLE_USER_HOME=/workspace/.gradle \
   -e XDG_CACHE_HOME=/workspace/.gradle/xdg-cache \
   -e GOPATH=/workspace/.gradle/go \
-  -v "$PROJECT_DIR:/workspace" \
+  "${DOCKER_ENV_ARGS[@]}" \
+  -v "$DOCKER_PROJECT_DIR:/workspace" \
   -w /workspace \
   "$IMAGE_NAME" \
   bash -lc "./gradlew --no-daemon $GRADLE_TASKS"

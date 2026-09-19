@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.wireguard.android.Application
 import com.wireguard.android.activity.CaptchaActivity
 import java.lang.ref.WeakReference
@@ -222,7 +223,7 @@ object CaptchaCoordinator {
 
     private fun closeActiveActivity() {
         val activity = activeActivityRef?.get() ?: return
-        Application.get().mainExecutor.execute {
+        ContextCompat.getMainExecutor(Application.get()).execute {
             if (!activity.isFinishing && !activity.isDestroyed) {
                 activity.finish()
             }

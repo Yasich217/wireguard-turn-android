@@ -22,6 +22,7 @@ extern void wgTurnProxyStop();
 extern void wgNotifyNetworkChange();
 extern char *wgTurnProxyGetRuntimeStatusJson();
 extern void wgTurnProxySetCaptchaProfile(const char *profile_json);
+extern void wgTurnProxyClearSessions();
 
 static JavaVM *java_vm;
 static jobject vpn_service_global;
@@ -549,16 +550,6 @@ char *wgResolveWithCurrentNetwork(const char *hostname)
 		attached = 1;
 	}
 
-	if (kernel_mode_socket_routing) {
-		__android_log_print(
-			ANDROID_LOG_INFO,
-			"WireGuard/JNI",
-			"wgResolveWithCurrentNetwork(%s): skipped in kernel-direct mode",
-			hostname
-		);
-		goto out;
-	}
-
 	ensure_connectivity_manager(env, vpn_service_global ? vpn_service_global : app_context_global);
 	if (!current_network_global || !get_all_by_name_method || !inet_get_host_address_method) {
 		goto out;
@@ -636,16 +627,6 @@ char *wgResolveAllWithCurrentNetwork(const char *hostname)
 			return NULL;
 		}
 		attached = 1;
-	}
-
-	if (kernel_mode_socket_routing) {
-		__android_log_print(
-			ANDROID_LOG_INFO,
-			"WireGuard/JNI",
-			"wgResolveAllWithCurrentNetwork(%s): skipped in kernel-direct mode",
-			hostname
-		);
-		goto out;
 	}
 
 	ensure_connectivity_manager(env, vpn_service_global ? vpn_service_global : app_context_global);
@@ -1047,4 +1028,9 @@ JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProx
 		wgTurnProxySetCaptchaProfile(profile_json_str);
 	(*env)->ReleaseStringUTFChars(env, profile_json, profile_json_jni);
 	free(profile_json_str);
+}
+
+JNIEXPORT void JNICALL Java_com_wireguard_android_backend_TurnBackend_wgTurnProxyClearSessions(JNIEnv *env, jclass c)
+{
+	wgTurnProxyClearSessions();
 }

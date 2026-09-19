@@ -40,7 +40,6 @@ import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.cert.CertificateFactory
 import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManagerFactory
@@ -760,11 +759,8 @@ object OtaUpdater {
             connection.readTimeout = minOf(readTimeoutMs, remainingMs)
 
             if (connection is HttpsURLConnection) {
-                if (BuildConfig.OTA_PINNED_CA_ENABLED) {
+                if (BuildConfig.UPDATE_CHANNEL.equals("ota", ignoreCase = true) && BuildConfig.OTA_PINNED_CA_ENABLED) {
                     connection.sslSocketFactory = otaSslSocketFactory(context)
-                }
-                connection.hostnameVerifier = HostnameVerifier { _, session ->
-                    HttpsURLConnection.getDefaultHostnameVerifier().verify(url.host, session)
                 }
             }
 
@@ -1074,7 +1070,11 @@ object OtaUpdater {
             .setOngoing(ongoing)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
-        NotificationManagerCompat.from(context).notify(OTA_NOTIFICATION_ID, notification)
+        try {
+            NotificationManagerCompat.from(context).notify(OTA_NOTIFICATION_ID, notification)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Update notification permission denied", e)
+        }
     }
 
     private fun postInstalledUpdateNotification(context: Context, target: RelaunchTarget) {

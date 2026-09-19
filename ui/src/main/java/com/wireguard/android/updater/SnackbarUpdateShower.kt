@@ -5,6 +5,7 @@
 
 package com.wireguard.android.updater
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import android.view.View
@@ -159,6 +160,8 @@ class SnackbarUpdateShower(private val fragment: Fragment) {
                                 Toast.makeText(context, ErrorMessages[e], Toast.LENGTH_SHORT).show()
                             }
                         }.setCancelable(false).setOnDismissListener {
+                            // CATEGORY_HOME targets the launcher, not an app-internal activity.
+                            @SuppressLint("UnsafeImplicitIntentLaunch")
                             val intent = Intent(Intent.ACTION_MAIN)
                             intent.addCategory(Intent.CATEGORY_HOME)
                             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)

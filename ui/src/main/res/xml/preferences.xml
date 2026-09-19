@@ -7,6 +7,8 @@
     <com.wireguard.android.preference.VersionPreference
         android:icon="@mipmap/ic_launcher"
         android:key="version" />
+    <com.wireguard.android.preference.ClearTurnSessionsPreference
+        android:key="clear_turn_sessions" />
     <com.wireguard.android.preference.ManualUpdatePreference
         android:key="manual_ota_update" />
     <CheckBoxPreference
@@ -41,7 +43,6 @@
         android:summaryOn="@string/multiple_tunnels_summary_on"
         android:title="@string/multiple_tunnels_title" />
     <com.wireguard.android.preference.ToolsInstallerPreference android:key="tools_installer" />
-    <com.wireguard.android.preference.KernelModuleEnablerPreference android:key="kernel_module_enabler" />
     <CheckBoxPreference
         android:defaultValue="false"
         android:key="allow_remote_control_intents"

@@ -13,6 +13,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.ContextThemeWrapper
 import android.view.Display
@@ -55,12 +56,15 @@ object SilentCaptchaSolver {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun solveLocked(context: Context, cacheId: Int, redirectUri: String, timeoutMs: Long): Result {
+        trace(context, "start cacheId=$cacheId timeoutMs=$timeoutMs")
         val latch = CountDownLatch(1)
         val completed = AtomicBoolean(false)
         val result = AtomicReference(Result(reason = "timeout"))
         val webViewRef = AtomicReference<WebView?>()
         val previousNetwork = AtomicReference<Network?>()
         val didBindNetwork = AtomicBoolean(false)
+        var lastFinishedUrl = ""
+        var lastFinishedElapsedMs = 0L
 
         fun cleanup() {
             val view = webViewRef.getAndSet(null)
@@ -99,6 +103,7 @@ object SilentCaptchaSolver {
                     cm.bindProcessToNetwork(network)
                     didBindNetwork.set(true)
                     Log.d(TAG, "Bound silent captcha to ${describeNetwork(cm, network)} cacheId=$cacheId")
+                    trace(context, "bound cacheId=$cacheId ${describeNetwork(cm, network)}")
                 } else {
                     Log.w(TAG, "No non-VPN physical network for silent captcha cacheId=$cacheId")
                 }
@@ -127,11 +132,19 @@ object SilentCaptchaSolver {
                     override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                         super.onPageStarted(view, url, favicon)
                         Log.d(TAG, "[pageStarted] cacheId=$cacheId url=${url.orEmpty().take(240)}")
+                        trace(context, "pageStarted cacheId=$cacheId url=${url.orEmpty()}")
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
+                        val now = SystemClock.elapsedRealtime()
+                        if (url.orEmpty() == lastFinishedUrl && now - lastFinishedElapsedMs < PAGE_FINISHED_DEBOUNCE_MS) {
+                            return
+                        }
+                        lastFinishedUrl = url.orEmpty()
+                        lastFinishedElapsedMs = now
                         Log.d(TAG, "[pageFinished] cacheId=$cacheId url=${url.orEmpty().take(240)} title=${view?.title}")
+                        trace(context, "pageFinished cacheId=$cacheId title=${view?.title} url=${url.orEmpty()}")
                         installScripts(view, cacheId, "finished")
                     }
 
@@ -158,6 +171,7 @@ object SilentCaptchaSolver {
                     }
                 }
                 Log.d(TAG, "Loading silent captcha cacheId=$cacheId redirectUri=${redirectUri.take(240)}")
+                trace(context, "load cacheId=$cacheId redirectUri=$redirectUri")
                 webView.loadUrl(redirectUri)
                 listOf(350L, 900L, 1700L, 2800L, 4200L, 6500L).forEach { delay ->
                     mainHandler.postDelayed({
@@ -173,12 +187,14 @@ object SilentCaptchaSolver {
         if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
             if (completed.compareAndSet(false, true)) {
                 Log.w(TAG, "Silent captcha timed out cacheId=$cacheId timeoutMs=$timeoutMs")
+                trace(context, "timeout cacheId=$cacheId timeoutMs=$timeoutMs")
                 result.set(Result(reason = "timeout"))
                 mainHandler.post { cleanup() }
             }
         }
         val final = result.get()
         Log.d(TAG, "Silent captcha result cacheId=$cacheId tokenLength=${final.token.length} terminal=${final.terminal} reason=${final.reason}")
+        trace(context, "result cacheId=$cacheId tokenLength=${final.token.length} terminal=${final.terminal} reason=${final.reason}")
         return final
     }
 
@@ -198,19 +214,22 @@ object SilentCaptchaSolver {
         fun onResult(successToken: String?) {
             val token = successToken.orEmpty()
             Log.d(TAG, "[bridge:result] cacheId=$cacheId tokenLength=${token.length}")
+            trace(context, "bridgeResult cacheId=$cacheId tokenLength=${token.length}")
             finish(Result(token = token, reason = "success"))
         }
 
         @JavascriptInterface
         fun onLimitExceeded(detail: String?) {
             Log.w(TAG, "[bridge:limit] cacheId=$cacheId detail=${detail.orEmpty().take(500)}")
+            trace(context, "bridgeLimit cacheId=$cacheId detail=${detail.orEmpty()}")
             finish(Result(terminal = true, reason = "limit:${detail.orEmpty()}"))
         }
 
         @JavascriptInterface
         fun log(message: String?) {
-            if (message.isNullOrBlank()) return
+            if (!BuildConfig.DEBUG || message.isNullOrBlank()) return
             Log.d(TAG, "[js] cacheId=$cacheId ${message.replace("\n", "\\n").take(3000)}")
+            trace(context, "js cacheId=$cacheId $message")
         }
 
         @JavascriptInterface
@@ -298,15 +317,33 @@ object SilentCaptchaSolver {
                 if (text.indexOf('Лимит попыток исчерпан') !== -1) {
                     try { AndroidCaptcha.onLimitExceeded('dom_text_limit'); } catch (e) {}
                 }
+                if (text.indexOf('Что-то пошло не так') !== -1 || text.indexOf('Повторите попытку позже') !== -1) {
+                    scheduleTransientReload(reason);
+                }
+            }
+            function scheduleTransientReload(reason) {
+                if (window.__androidSilentCaptchaReloadScheduled) return;
+                var key = '__wgTurnTransientReloads';
+                var count = 0;
+                try { count = parseInt(sessionStorage.getItem(key) || '0', 10) || 0; } catch (e) {}
+                if (count >= 3) {
+                    sendLog('[transient-reload-exhausted] reason=' + reason + ' count=' + count);
+                    return;
+                }
+                count += 1;
+                window.__androidSilentCaptchaReloadScheduled = true;
+                try { sessionStorage.setItem(key, String(count)); } catch (e) {}
+                var delay = 1000 + count * 1000;
+                sendLog('[transient-reload] reason=' + reason + ' attempt=' + count + ' delayMs=' + delay);
+                setTimeout(function() {
+                    try { location.reload(); } catch (e) { window.__androidSilentCaptchaReloadScheduled = false; }
+                }, delay);
             }
             function scheduleClick(reason, delay) {
                 setTimeout(function() {
                     if (window.__androidSilentCaptchaTerminal) return;
-                    if (!window.__androidSilentCaptchaComponentDoneOk) {
-                        sendLog('[auto-click-wait] reason=' + reason + ' componentDone=false');
-                        scheduleClick(reason + '-component-wait', 350);
-                        return;
-                    }
+                    // The page can complete componentDone before this hook is injected.
+                    // Checkbox presence is the reliable readiness signal in that case.
                     clickCheckboxOnce(reason);
                 }, delay || 0);
             }
@@ -321,7 +358,7 @@ object SilentCaptchaSolver {
                     var rect = node.getBoundingClientRect ? node.getBoundingClientRect() : { left: 10, top: 10, width: 20, height: 20 };
                     var x = Math.max(1, Math.floor((rect.left || 10) + Math.max(10, rect.width || 20) / 2));
                     var y = Math.max(1, Math.floor((rect.top || 10) + Math.max(10, rect.height || 20) / 2));
-                    sendLog('[auto-click] reason=' + reason + ' tag=' + node.tagName + ' role=' + (node.getAttribute('role') || '') + ' x=' + x + ' y=' + y);
+                    sendLog('[auto-click] reason=' + reason + ' componentDoneSeen=' + window.__androidSilentCaptchaComponentDoneOk + ' tag=' + node.tagName + ' role=' + (node.getAttribute('role') || '') + ' x=' + x + ' y=' + y);
                     ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach(function(type) {
                         node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
                     });
@@ -450,6 +487,11 @@ object SilentCaptchaSolver {
     """.trimIndent()
 
     private const val CAPTCHA_TIMEOUT_MS = 45_000L
+    private const val PAGE_FINISHED_DEBOUNCE_MS = 750L
     private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Mobile Safari/537.36"
     private const val TAG = "WireGuard/SilentCaptcha"
+
+    private fun trace(context: Context, message: String) {
+        CaptchaDebugTrace.append(context, "silent", message)
+    }
 }

@@ -22,6 +22,11 @@ object VkCaptchaProfileStore {
             .onFailure { Log.w(TAG, "Failed to load VK captcha profile into native", it) }
     }
 
+    fun clear(context: Context) {
+        runCatching { profileFile(context).delete() }
+            .onFailure { Log.w(TAG, "Failed to delete VK captcha browser profile", it) }
+    }
+
     fun saveFromRequestBody(context: Context, requestBody: String?, userAgent: String?): Boolean {
         val params = parseForm(requestBody.orEmpty())
         val existing = loadJson(context)

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseVkCaptchaErrorRedirectOnly(t *testing.T) {
 	errData := map[string]interface{}{
@@ -51,5 +54,27 @@ func TestParseVkCaptchaErrorLegacyFields(t *testing.T) {
 	}
 	if captchaErr.CaptchaAttempt != "1" {
 		t.Fatalf("unexpected captcha attempt %q", captchaErr.CaptchaAttempt)
+	}
+}
+
+func TestCaptchaWaitLockoutIsScopedToCredentialCache(t *testing.T) {
+	oldStreamsPerCred := streamsPerCred
+	oldBackoff := captchaBackoffSec
+	t.Cleanup(func() {
+		streamsPerCred = oldStreamsPerCred
+		captchaBackoffSec = oldBackoff
+		clearCaptchaLockouts()
+	})
+
+	streamsPerCred = 4
+	captchaBackoffSec = 120
+	clearCaptchaLockouts()
+	noteCaptchaWaitLockout(0, "web_app", "test-link", "test")
+
+	if remaining := captchaLockoutRemaining(0, "web_app", "test-link"); remaining <= 0 || remaining > 2*time.Minute {
+		t.Fatalf("expected cache 0 lockout near two minutes, got %s", remaining)
+	}
+	if remaining := captchaLockoutRemaining(4, "web_app", "test-link"); remaining != 0 {
+		t.Fatalf("cache 1 must remain usable after cache 0 rejection, got lockout %s", remaining)
 	}
 }

@@ -6,11 +6,19 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      UPDATE_CHANNEL: github
+      OTA_PINNED_CA_ENABLED: 'false'
+      BUILD_TOOLS_VERSION: '36.0.0'
 
     steps:
     - uses: actions/checkout@v4
@@ -33,13 +41,13 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
       with:
-        packages: 'build-tools;29.0.3'
+        packages: 'build-tools;36.0.0'
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
     - name: Build with Gradle
-      run: ./gradlew :ui:assembleRelease --stacktrace
+      run: ./gradlew :tunnel:testReleaseUnitTest :ui:lintRelease :ui:assembleRelease --stacktrace
 
     - name: Get version from gradle.properties
       id: version
@@ -68,6 +76,7 @@ jobs:
     - name: Rename APK
       run: |
         APK_DIR="ui/build/outputs/apk/release"
+        mkdir -p release-assets
         SRC=""
         if [ -f "$APK_DIR/ui-release.apk" ]; then
           SRC="$APK_DIR/ui-release.apk"
@@ -78,13 +87,31 @@ jobs:
           ls -la "$APK_DIR" || true
           exit 1
         fi
-        mv "$SRC" "$APK_DIR/wg-turn-v${{ steps.version.outputs.version }}.apk"
+        cp "$SRC" "release-assets/wg-turn-v${{ steps.version.outputs.version }}.apk"
+
+    - name: Verify public update configuration and APK resources
+      run: |
+        python3 - <<'PY'
+        import pathlib
+        import zipfile
+
+        config = pathlib.Path('ui/build/generated/source/buildConfig/release/com/wireguard/android/BuildConfig.java').read_text()
+        assert 'UPDATE_CHANNEL = "github"' in config
+        assert 'OTA_PINNED_CA_ENABLED = false' in config
+        assert 'OTA_RELEASE_META_URL = ""' in config
+        assert 'OTA_DEBUG_META_URL = ""' in config
+        for apk in pathlib.Path('release-assets').glob('*.apk'):
+            with zipfile.ZipFile(apk) as archive:
+                forbidden = [name for name in archive.namelist() if
+                    'ota_root_ca' in name or name.endswith(('.pem', '.jks', '.keystore', '.key'))]
+                assert not forbidden, f'Local assets in APK: {forbidden}'
+        PY
 
     - name: Sign APK
       uses: r0adkll/sign-android-release@v1
       id: sign_app
       with:
-        releaseDirectory: ui/build/outputs/apk/release
+        releaseDirectory: release-assets
         signingKeyBase64: ${{ secrets.SIGNING_KEY }}
         alias: ${{ secrets.ALIAS }}
         keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -93,11 +120,12 @@ jobs:
     - name: Prepare OTA assets
       id: ota_assets
       run: |
-        APK_DIR="ui/build/outputs/apk/release"
+        APK_DIR="release-assets"
         SIGNED_APK="${{ steps.sign_app.outputs.signedReleaseFile }}"
         OTA_APK="${APK_DIR}/ota-release.apk"
         OTA_JSON="${APK_DIR}/ota-release.json"
         cp "${SIGNED_APK}" "${OTA_APK}"
+        "${ANDROID_HOME}/build-tools/${BUILD_TOOLS_VERSION}/apksigner" verify --verbose "${OTA_APK}"
         SHA256=$(sha256sum "${OTA_APK}" | awk '{print $1}')
         cat > "${OTA_JSON}" <<EOF
         {
@@ -122,6 +150,8 @@ jobs:
           ${{ steps.ota_assets.outputs.ota_json }}
         draft: false
         prerelease: false
+        make_latest: true
+        fail_on_unmatched_files: true
         name: v${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}
         body_path: ${{ steps.release_notes.outputs.release_notes_file }}
       env:

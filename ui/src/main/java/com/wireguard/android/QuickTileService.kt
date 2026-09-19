@@ -4,6 +4,7 @@
  */
 package com.wireguard.android
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.Bitmap
@@ -50,6 +51,9 @@ class QuickTileService : TileService() {
         return ret
     }
 
+    // The Intent overload is only used below API 34; the PendingIntent overload
+    // is used on Android versions that require it.
+    @SuppressLint("StartActivityAndCollapseDeprecated")
     override fun onClick() {
         applicationScope.launch {
             if (tunnel == null) {

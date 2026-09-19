@@ -50,10 +50,12 @@ class TurnProxyManager(private val context: Context) {
     private var activeSettings: TurnSettings? = null
     private var activePublicKey: String = ""
     private var activeKeepaliveSec: Int = 0
+    private var sessionResetState: SessionResetState? = null
     private var lastFailedTunnelName: String? = null
     @Volatile private var userInitiatedStop: Boolean = false
     @Volatile private var lastSuccessfulStartElapsedMs: Long = 0L
     @Volatile private var lastKernelHelperCheckElapsedMs: Long = 0L
+    @Volatile private var kernelRecoveryJob: Job? = null
     
     // Network tracking
     private val networkMonitor = PhysicalNetworkMonitor(context)
@@ -176,6 +178,21 @@ class TurnProxyManager(private val context: Context) {
         @Volatile var running: Boolean = false,
         @Volatile var runtimeStatus: TurnRuntimeStatus = TurnRuntimeStatus(),
         @Volatile var statusPollingJob: Job? = null,
+        val kernelHealth: KernelHealth = KernelHealth(),
+    )
+
+    private data class KernelHealth(
+        var lastCheckElapsedMs: Long = 0L,
+        var lastProxyRxBytes: Long = 0L,
+        var txBytesAtLastRx: Long = 0L,
+        var noRxSinceElapsedMs: Long = 0L,
+    )
+
+    private data class SessionResetState(
+        val tunnelName: String,
+        val settings: TurnSettings,
+        val publicKey: String,
+        val keepaliveSec: Int,
     )
 
     data class TurnRuntimeStatus(
@@ -185,6 +202,8 @@ class TurnProxyManager(private val context: Context) {
         val vkCredentialsProfiles: List<String> = emptyList(),
         val vkCredentialsProfileErrors: Map<String, Int> = emptyMap(),
         val lastSyncUnix: Long = 0L,
+        val proxyTxBytes: Long = 0L,
+        val proxyRxBytes: Long = 0L,
         val activeStreams: Int = 0,
         val expectedStreams: Int = 0,
         val pendingCaptchaCount: Int = 0,
@@ -461,6 +480,55 @@ class TurnProxyManager(private val context: Context) {
             }
         }
 
+    /** Stops the active native session without turning the tunnel itself off. */
+    suspend fun stopForSessionReset() = withContext(Dispatchers.IO) {
+        val tunnelName = activeTunnelName
+        val settings = activeSettings
+        sessionResetState = if (tunnelName != null && settings != null && settings.enabled && !userInitiatedStop) {
+            SessionResetState(tunnelName, settings, activePublicKey, activeKeepaliveSec)
+        } else {
+            null
+        }
+
+        // Cancel immediately so an in-flight VK request cannot refill caches while they are cleared.
+        TurnBackend.wgTurnProxyStop()
+        operationMutex.lock()
+        try {
+            tunnelName?.let { name ->
+                instances[name]?.apply {
+                    running = false
+                    statusPollingJob?.cancel()
+                    statusPollingJob = null
+                    runtimeStatus = runtimeStatus.copy(
+                        modeInfo = context.getString(com.wireguard.android.R.string.turn_mode_retrying_proxy),
+                        activeStreams = 0,
+                        pendingCaptchaCount = 0,
+                    )
+                }
+            }
+            CaptchaCoordinator.stopAttempt(clearFailureState = true)
+            TurnNotificationManager.clearTurnFailureNotification(context)
+        } finally {
+            operationMutex.unlock()
+        }
+    }
+
+    /** Reconnects the session captured by [stopForSessionReset], if TURN was active. */
+    suspend fun restartAfterSessionReset() {
+        val reset = sessionResetState.also { sessionResetState = null } ?: return
+        if (userInitiatedStop || activeTunnelName != reset.tunnelName) return
+        lastFailedTunnelName = null
+        TurnNotificationManager.clearTurnFailureNotification(context)
+        CaptchaCoordinator.beginAttempt(clearFailureState = true)
+        resetRuntimeForNewAttempt(
+            reset.tunnelName,
+            context.getString(com.wireguard.android.R.string.turn_mode_retrying_proxy),
+        )
+        check(startForTunnelInternal(reset.tunnelName, reset.settings, reset.publicKey, reset.keepaliveSec)) {
+            "TURN restart failed after clearing sessions"
+        }
+    }
+
     fun markUsingDirectConnection(tunnelName: String) {
         val instance = instances.getOrPut(tunnelName) { Instance() }
         instance.runtimeStatus = instance.runtimeStatus.copy(
@@ -514,7 +582,7 @@ class TurnProxyManager(private val context: Context) {
             Log.d(TAG, "Starting foreground helper VpnService for kernel TURN socket protection")
             val intent = Intent(context, GoBackend.VpnService::class.java)
                 .putExtra(GoBackend.EXTRA_KERNEL_HELPER, true)
-            context.startForegroundService(intent)
+            androidx.core.content.ContextCompat.startForegroundService(context, intent)
             waitForJniRegistration()
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to start helper VpnService for kernel TURN", e)
@@ -686,6 +754,8 @@ class TurnProxyManager(private val context: Context) {
                             vkCredentialsProfiles = vkCredentialsProfiles.distinct().sorted(),
                             vkCredentialsProfileErrors = vkCredentialsProfileErrors.toSortedMap(),
                             lastSyncUnix = if (activeStreams > 0 && obj.has("last_sync_unix")) obj.optLong("last_sync_unix", previous.lastSyncUnix) else 0L,
+                            proxyTxBytes = obj.optLong("proxy_tx_bytes", previous.proxyTxBytes).coerceAtLeast(0L),
+                            proxyRxBytes = obj.optLong("proxy_rx_bytes", previous.proxyRxBytes).coerceAtLeast(0L),
                             activeStreams = activeStreams,
                             expectedStreams = expectedStreams,
                             pendingCaptchaCount = pendingCaptchaCount,
@@ -696,6 +766,7 @@ class TurnProxyManager(private val context: Context) {
                 } catch (_: Throwable) {
                 }
                 maybeEnsureKernelHelperAlive()
+                maybeRecoverStalledKernelTransport(tunnelName, instance)
                 val now = SystemClock.elapsedRealtime()
                 val status = instance.runtimeStatus
                 val partial = status.expectedStreams > 0 && status.activeStreams < status.expectedStreams
@@ -715,6 +786,77 @@ class TurnProxyManager(private val context: Context) {
         scope.launch {
             if (!TurnBackend.waitForVpnServiceRegistered(1)) {
                 ensureKernelSocketProtection()
+            }
+        }
+    }
+
+    private suspend fun maybeRecoverStalledKernelTransport(tunnelName: String, instance: Instance) {
+        val backend = Application.peekBackend()
+        val health = instance.kernelHealth
+        if (backend !is WgQuickBackend) {
+            health.lastCheckElapsedMs = 0L
+            health.lastProxyRxBytes = 0L
+            health.txBytesAtLastRx = 0L
+            health.noRxSinceElapsedMs = 0L
+            return
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - health.lastCheckElapsedMs < KERNEL_HEALTH_CHECK_INTERVAL_MS) return
+        health.lastCheckElapsedMs = now
+
+        val status = instance.runtimeStatus
+        val tx = status.proxyTxBytes
+        val rx = status.proxyRxBytes
+        if (tx < health.txBytesAtLastRx || rx < health.lastProxyRxBytes) {
+            // Native counters were reset by a normal restart.
+            health.lastProxyRxBytes = rx
+            health.txBytesAtLastRx = tx
+            health.noRxSinceElapsedMs = now
+            return
+        }
+        if (rx != health.lastProxyRxBytes) {
+            health.lastProxyRxBytes = rx
+            health.txBytesAtLastRx = tx
+            health.noRxSinceElapsedMs = now
+            return
+        }
+        if (status.activeStreams <= 0) {
+            health.txBytesAtLastRx = tx
+            health.noRxSinceElapsedMs = now
+            return
+        }
+        if (health.noRxSinceElapsedMs == 0L) health.noRxSinceElapsedMs = now
+
+        val outboundWithoutReply = tx - health.txBytesAtLastRx
+        val noReplyForMs = now - health.noRxSinceElapsedMs
+        if (outboundWithoutReply < KERNEL_STALL_MIN_TX_BYTES || noReplyForMs < KERNEL_STALL_MIN_DURATION_MS) return
+
+        val tunnel = Application.getTunnelManager().getTunnels()[tunnelName] ?: return
+        val statistics = try {
+            backend.getStatistics(tunnel)
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to check kernel transport for $tunnelName", e)
+            return
+        }
+        val latestHandshakeMs = statistics.peers().mapNotNull { key ->
+            statistics.peer(key)?.latestHandshakeEpochMillis
+        }.maxOrNull() ?: 0L
+        if (latestHandshakeMs <= 0L) return
+        val handshakeAgeMs = System.currentTimeMillis() - latestHandshakeMs
+        if (handshakeAgeMs < KERNEL_STALL_MIN_HANDSHAKE_AGE_MS) return
+
+        if (kernelRecoveryJob?.isActive == true) return
+        Log.w(
+            TAG,
+            "Kernel WG transport stalled for $tunnelName: handshakeAgeMs=$handshakeAgeMs " +
+                "noReplyForMs=$noReplyForMs outboundWithoutReply=$outboundWithoutReply; restarting TURN",
+        )
+        kernelRecoveryJob = scope.launch {
+            try {
+                performRestartSequence()
+            } finally {
+                kernelRecoveryJob = null
             }
         }
     }
@@ -927,5 +1069,9 @@ class TurnProxyManager(private val context: Context) {
         private const val STATUS_FAST_POLL_WINDOW_MS = 10_000L
         private const val STATUS_STEADY_POLL_MS = 25_000L
         private const val KERNEL_HELPER_CHECK_INTERVAL_MS = 5_000L
+        private const val KERNEL_HEALTH_CHECK_INTERVAL_MS = 5_000L
+        private const val KERNEL_STALL_MIN_DURATION_MS = 30_000L
+        private const val KERNEL_STALL_MIN_HANDSHAKE_AGE_MS = 45_000L
+        private const val KERNEL_STALL_MIN_TX_BYTES = 4_096L
     }
 }
