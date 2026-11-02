@@ -19,6 +19,7 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import androidx.annotation.Nullable;
 
@@ -30,6 +31,7 @@ import androidx.annotation.Nullable;
 public class RootShell {
     private static final String SU = "su";
     private static final String TAG = "WireGuard/RootShell";
+    private static final Pattern WIREGUARD_KEY = Pattern.compile("(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{43}=(?![A-Za-z0-9+/=])");
 
     private final File localBinaryDir;
     private final File localTemporaryDir;
@@ -90,7 +92,7 @@ public class RootShell {
             final String marker = UUID.randomUUID().toString();
             final String script = "echo " + marker + "; echo " + marker + " >&2; (" + command +
                     "); ret=$?; echo " + marker + " $ret; echo " + marker + " $ret >&2\n";
-            Log.v(TAG, "executing: " + command);
+            Log.v(TAG, "executing: " + WIREGUARD_KEY.matcher(command).replaceAll("<redacted-key>"));
             stdin.write(script);
             stdin.flush();
             String line;
@@ -107,7 +109,7 @@ public class RootShell {
                 } else if (markersSeen > 0) {
                     if (output != null)
                         output.add(line);
-                    Log.v(TAG, "stdout: " + line);
+                    Log.v(TAG, "stdout: " + WIREGUARD_KEY.matcher(line).replaceAll("<redacted-key>"));
                 }
             }
             while ((line = stderr.readLine()) != null) {
@@ -118,7 +120,7 @@ public class RootShell {
                         break;
                     }
                 } else if (markersSeen > 2) {
-                    Log.v(TAG, "stderr: " + line);
+                    Log.v(TAG, "stderr: " + WIREGUARD_KEY.matcher(line).replaceAll("<redacted-key>"));
                 }
             }
             if (markersSeen != 4)

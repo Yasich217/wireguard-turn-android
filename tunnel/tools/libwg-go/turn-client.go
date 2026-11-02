@@ -100,7 +100,7 @@ type stream struct {
 	id              int
 	in              chan []byte
 	out             net.PacketConn
-	peer            atomic.Pointer[net.Addr] // Last seen addr from WireGuard
+	peer            *localPeer // Shared return address and RX health for this hub
 	ready           atomic.Bool
 	writeMu         sync.Mutex
 	sessionID       []byte
@@ -1001,18 +1001,18 @@ func (s *stream) runNoDTLS(ctx context.Context, relayConn net.PacketConn, peer *
 				return
 			}
 			if from.String() == peer.String() {
-				addr := s.peer.Load()
-				if addr == nil {
+				written, err := s.peer.writeTo(s.out, buf[:n])
+				if written == 0 && err == nil {
 					turnLog("[STREAM %d] RX: no peer address yet", s.id)
 					continue
 				}
-				written, err := s.out.WriteTo(buf[:n], *addr)
 				if err != nil {
 					noDtlsRxErrorCount.Add(1)
 					turnLog("[STREAM %d] RX write error: %v", s.id, err)
 					reportErr(fmt.Errorf("NoDTLS RX write error: %w", err))
 					return
 				}
+				s.peer.received(time.Now())
 				proxyRxBytes.Add(uint64(written))
 			}
 		}
@@ -1272,28 +1272,23 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 	default:
 	}
 
-	var lastRx atomic.Int64
-	lastRx.Store(time.Now().Unix())
-	var lastTx atomic.Int64
-
 	wg.Add(2)
 
 	// WireGuard -> DTLS (TX)
 	go func() {
 		defer wg.Done()
 		defer sCancel()
+		watchdog := trafficWatchdog{}
 		for {
 			select {
 			case <-sCtx.Done():
 				return
 			case b := <-s.in:
 
-				// An idle stream is healthy; only expire traffic that was sent without a later RX.
-				lastTxAt := lastTx.Load()
-				lastRxAt := lastRx.Load()
-				if s.watchdogTimeout > 0 &&
-					lastTxAt > lastRxAt &&
-					time.Since(time.Unix(lastTxAt, 0)) > time.Duration(s.watchdogTimeout)*time.Second {
+				// Replies can arrive on any stream. Check the whole hub's RX health,
+				// and retain the first unanswered TX even under continuous traffic.
+				now := time.Now()
+				if watchdog.stalled(s.peer, now, time.Duration(s.watchdogTimeout)*time.Second) {
 					packetPool.Put(b[:cap(b)])
 					dtlsTxDropCount.Add(1)
 					turnLog("[STREAM %d] TX watchdog timeout (%ds)", s.id, s.watchdogTimeout)
@@ -1301,6 +1296,7 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 					return
 				}
 
+				watchdog.sent(now, b)
 				_, err := s.writeDTLS(dtlsConn, b, 0)
 				packetPool.Put(b[:cap(b)])
 
@@ -1310,7 +1306,6 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 					reportErr(fmt.Errorf("DTLS TX error: %w", err))
 					return
 				}
-				lastTx.Store(time.Now().Unix())
 			}
 		}
 	}()
@@ -1328,15 +1323,15 @@ func (s *stream) runDTLS(ctx context.Context, relayConn net.PacketConn, peer *ne
 				reportErr(fmt.Errorf("DTLS RX error: %w", err))
 				return
 			}
-			lastRx.Store(time.Now().Unix())
-			if last := s.peer.Load(); last != nil {
-				written, err := s.out.WriteTo(buf[:n], *last)
-				if err != nil {
-					dtlsRxErrorCount.Add(1)
-					turnLog("[STREAM %d] RX write error: %v", s.id, err)
-					reportErr(fmt.Errorf("DTLS RX write error: %w", err))
-					return
-				}
+			written, err := s.peer.writeTo(s.out, buf[:n])
+			if err != nil {
+				dtlsRxErrorCount.Add(1)
+				turnLog("[STREAM %d] RX write error: %v", s.id, err)
+				reportErr(fmt.Errorf("DTLS RX write error: %w", err))
+				return
+			}
+			if written > 0 {
+				s.peer.received(time.Now())
 				proxyRxBytes.Add(uint64(written))
 			}
 		}
@@ -1531,6 +1526,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, vklinksC *C.char, mode
 
 	ok := make(chan struct{}, int(n))
 	startup := newStartupTracker(int(n))
+	local := &localPeer{}
 	streams := make([]*stream, int(n))
 	for i := 0; i < int(n); i++ {
 		streams[i] = &stream{
@@ -1538,6 +1534,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, vklinksC *C.char, mode
 			id:              i,
 			in:              make(chan []byte, 512),
 			out:             lc,
+			peer:            local,
 			sessionID:       sessionID,
 			cert:            &cert,
 			meta:            meta,
@@ -1576,6 +1573,7 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, vklinksC *C.char, mode
 				return
 			}
 			proxyTxBytes.Add(uint64(nRead))
+			local.observe(addr)
 
 			// Round-Robin selection
 			lastUsed = (lastUsed + 1) % nStreams
@@ -1593,9 +1591,6 @@ func wgTurnProxyStart(peerAddrC *C.char, vklinkC *C.char, vklinksC *C.char, mode
 				packetPool.Put(b[:cap(b)])
 				continue
 			}
-
-			returnAddr := addr
-			s.peer.Store(&returnAddr)
 
 			select {
 			case s.in <- b[:nRead]:

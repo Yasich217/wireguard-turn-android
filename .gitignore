@@ -12,6 +12,7 @@
 .cxx/
 Thumbs.db
 build/
+__pycache__/
 *.apk
 *.class
 *.dex

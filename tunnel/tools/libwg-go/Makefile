@@ -15,7 +15,7 @@ NDK_GO_ARCH_MAP_mips64 := mips64x
 comma := ,
 CLANG_FLAGS := --target=$(TARGET) --sysroot=$(SYSROOT)
 export CGO_CFLAGS := $(CLANG_FLAGS) $(subst -mthumb,-marm,$(CFLAGS))
-export CGO_LDFLAGS := $(CLANG_FLAGS) $(patsubst -Wl$(comma)--build-id=%,-Wl$(comma)--build-id=none,$(LDFLAGS)) -Wl,-soname=libwg-go.so
+export CGO_LDFLAGS := $(CLANG_FLAGS) $(patsubst -Wl$(comma)--build-id=%,-Wl$(comma)--build-id=none,$(LDFLAGS)) -Wl,-soname=libwg-go.so -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
 export GOARCH := $(NDK_GO_ARCH_MAP_$(ANDROID_ARCH_NAME))
 export GOOS := android
 export CGO_ENABLED := 1
@@ -24,7 +24,7 @@ default: $(DESTDIR)/libwg-go.so
 
 SOURCES := $(wildcard *.go *.c)
 
-$(DESTDIR)/libwg-go.so: $(SOURCES) go.mod go.sum
+$(DESTDIR)/libwg-go.so: $(SOURCES) go.mod go.sum Makefile
 	go build -tags linux -ldflags="-checklinkname=0 -X golang.zx2c4.com/wireguard/ipc.socketDirectory=/data/data/$(ANDROID_PACKAGE_NAME)/cache/wireguard -buildid=" -v -trimpath -buildvcs=false -o "$@" -buildmode c-shared
 
 .DELETE_ON_ERROR:

@@ -37,6 +37,14 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.25'
+        cache-dependency-path: tunnel/tools/libwg-go/go.sum
+
+    - name: Test shared WireGuard return path and watchdog
+      working-directory: tunnel/tools/libwg-go
+      run: go test -race local-peer.go local_peer_test.go
+
+    - name: Test amended-release cleanup
+      run: python3 -m unittest discover -s scripts/tests
 
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
@@ -93,6 +101,7 @@ jobs:
       run: |
         python3 - <<'PY'
         import pathlib
+        import struct
         import zipfile
 
         config = pathlib.Path('ui/build/generated/source/buildConfig/release/com/wireguard/android/BuildConfig.java').read_text()
@@ -105,6 +114,19 @@ jobs:
                 forbidden = [name for name in archive.namelist() if
                     'ota_root_ca' in name or name.endswith(('.pem', '.jks', '.keystore', '.key'))]
                 assert not forbidden, f'Local assets in APK: {forbidden}'
+                for name in archive.namelist():
+                    if not (name.startswith('lib/arm64-v8a/') and name.endswith('.so')):
+                        continue
+                    elf = archive.read(name)
+                    assert elf[:6] == b'\x7fELF\x02\x01', name
+                    phoff = struct.unpack_from('<Q', elf, 32)[0]
+                    phsize, phnum = struct.unpack_from('<HH', elf, 54)
+                    for index in range(phnum):
+                        header = struct.unpack_from('<IIQQQQQQ', elf, phoff + index * phsize)
+                        if header[0] == 1:
+                            assert header[7] >= 16384, f'Unaligned LOAD: {name}'
+                        elif header[0] == 0x6474e552:
+                            assert (header[3] + header[6]) % 16384 == 0, f'Unaligned RELRO: {name}'
         PY
 
     - name: Sign APK
@@ -156,3 +178,9 @@ jobs:
         body_path: ${{ steps.release_notes.outputs.release_notes_file }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Remove releases superseded by an amend
+      run: python3 scripts/prune-amended-releases.py --apply
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CURRENT_RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
